@@ -21,8 +21,28 @@ Pipeline de classificação e extração de dados de documentos brasileiros (RG/
 git clone <repo-url>
 cd doc-pipeline
 
-# Instale as dependências (inclui doc-classifier como dependência editável)
+# Crie e ative o ambiente virtual
+python3 -m venv venv
+source venv/bin/activate  # Linux/Mac
+# .\venv\Scripts\activate  # Windows
+
+# Instale as dependências
 pip install -r requirements.txt
+
+# Copie o modelo do classificador para a pasta models/
+cp /caminho/para/modelo.pth models/classifier.pth
+```
+
+## Quick Start
+
+```bash
+# Ativar venv
+source venv/bin/activate
+
+# Subir a API (usa models/classifier.pth por padrão)
+python api.py
+
+# A API estará disponível em http://localhost:8001
 ```
 
 ## Uso
@@ -31,31 +51,32 @@ pip install -r requirements.txt
 
 ```bash
 # Pipeline completo (classificação + extração)
-python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth
+python cli.py documento.jpg
 
 # Usar GOT-OCR2 ao invés de Qwen (menor uso de VRAM)
-python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth --backend got-ocr
+python cli.py documento.jpg --backend got-ocr
 
 # Apenas classificar
-python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth --no-extraction
+python cli.py documento.jpg --no-extraction
 
 # Processar pasta com saída JSON
-python cli.py ./documentos/ -m ../doc-classifier/modelos/modelo.pth --json -o resultados.json
+python cli.py ./documentos/ --json -o resultados.json
 
 # Multi-GPU: classificador em cuda:0, extractor em cuda:1
-python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth \
-  --classifier-device cuda:0 --extractor-device cuda:1
+python cli.py documento.jpg --classifier-device cuda:0 --extractor-device cuda:1
 ```
 
 ### API
 
 ```bash
-# Iniciar servidor
-DOC_PIPELINE_CLASSIFIER_MODEL_PATH=../doc-classifier/modelos/modelo.pth python api.py
+# Iniciar servidor (usa models/classifier.pth por padrão)
+python api.py
 
-# Ou com GOT-OCR
-DOC_PIPELINE_CLASSIFIER_MODEL_PATH=../doc-classifier/modelos/modelo.pth \
-  DOC_PIPELINE_EXTRACTOR_BACKEND=got-ocr python api.py
+# Com GOT-OCR (menor VRAM)
+DOC_PIPELINE_EXTRACTOR_BACKEND=got-ocr python api.py
+
+# Com modelo em outro caminho
+DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/outro/caminho/modelo.pth python api.py
 ```
 
 #### Endpoints
@@ -88,7 +109,7 @@ from doc_pipeline import DocumentPipeline
 
 # Inicializa pipeline
 pipeline = DocumentPipeline(
-    classifier_model_path="../doc-classifier/modelos/modelo.pth",
+    classifier_model_path="models/classifier.pth",
     extractor_backend="qwen-vl",  # ou "got-ocr"
 )
 
@@ -151,7 +172,7 @@ extraction = pipeline.extract("rg.jpg", DocumentType.RG_FRENTE)
 
 ```env
 # Classificador
-DOC_PIPELINE_CLASSIFIER_MODEL_PATH=../doc-classifier/modelos/modelo.pth
+DOC_PIPELINE_CLASSIFIER_MODEL_PATH=models/classifier.pth
 DOC_PIPELINE_CLASSIFIER_MODEL_TYPE=efficientnet_b0
 DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
 DOC_PIPELINE_CLASSIFIER_FP8=false
@@ -189,12 +210,38 @@ DOC_PIPELINE_MIN_CONFIDENCE=0.5
 - `rg_frente` - RG frente
 - `rg_verso` - RG verso
 
+## Estrutura do Projeto
+
+```
+doc-pipeline/
+├── api.py                 # FastAPI REST server
+├── cli.py                 # Command-line interface
+├── models/
+│   └── classifier.pth     # Modelo EfficientNet (não versionado)
+├── doc_pipeline/
+│   ├── pipeline.py        # Orquestrador principal
+│   ├── config.py          # Configurações (pydantic-settings)
+│   ├── schemas.py         # Modelos Pydantic (RGData, CNHData, etc.)
+│   ├── classifier/        # Adapter para doc-classifier
+│   ├── extractors/        # Backends VLM (Qwen, GOT-OCR)
+│   └── prompts/           # Templates de extração
+└── docs/
+    └── API_FLOW.md        # Documentação detalhada do fluxo
+```
+
 ## Dependências
 
 - Python 3.12+
 - PyTorch 2.0+
 - transformers 4.49+
-- doc-classifier (dependência local)
+- [doc-classifier](https://github.com/henriquefockink/doc-classifier) (dependência local)
+
+### Opcionais
+
+```bash
+# Flash Attention 2 (melhora performance ~20%)
+pip install -e ".[flash]"
+```
 
 ## Desenvolvimento
 

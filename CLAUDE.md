@@ -21,16 +21,16 @@ pip install -e ".[dev]"
 pre-commit install
 
 # Run CLI - full pipeline
-python cli.py documento.jpg -m /path/to/model.pth
+python cli.py documento.jpg -m models/classifier.pth
 
 # Run CLI - classification only
-python cli.py documento.jpg -m /path/to/model.pth --no-extraction
+python cli.py documento.jpg -m models/classifier.pth --no-extraction
 
 # Run CLI - with GOT-OCR backend (lower VRAM)
-python cli.py documento.jpg -m /path/to/model.pth --backend got-ocr
+python cli.py documento.jpg -m models/classifier.pth --backend got-ocr
 
-# Run API server
-DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/path/to/model.pth python api.py
+# Run API server (uses models/classifier.pth by default)
+python api.py
 ```
 
 ## Architecture
@@ -62,7 +62,7 @@ doc_pipeline/
 
 ## Configuration
 
-Required environment variable: `DOC_PIPELINE_CLASSIFIER_MODEL_PATH`
+Default model path: `models/classifier.pth`
 
 Key settings (all prefixed with `DOC_PIPELINE_`):
 - `CLASSIFIER_MODEL_TYPE`: efficientnet_b0, efficientnet_b2, efficientnet_b4

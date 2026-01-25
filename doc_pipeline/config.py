@@ -30,7 +30,7 @@ class Settings(BaseSettings):
 
     # Classifier settings
     classifier_model_path: Path = Field(
-        default=Path("../doc-classifier/modelos/modelo.pth"),
+        default=Path("models/classifier.pth"),
         description="Caminho para o modelo do classificador",
     )
     classifier_model_type: str = Field(

@@ -44,17 +44,20 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Exemplos:
-  # Pipeline completo (classificação + extração)
-  python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth
+  # Pipeline completo (usa models/classifier.pth por padrão)
+  python cli.py documento.jpg
 
   # Usar GOT-OCR2 ao invés de Qwen
-  python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth --backend got-ocr
+  python cli.py documento.jpg --backend got-ocr
 
   # Apenas classificar
-  python cli.py documento.jpg -m ../doc-classifier/modelos/modelo.pth --no-extraction
+  python cli.py documento.jpg --no-extraction
 
   # Processar pasta com saída JSON
-  python cli.py ./documentos/ -m ../doc-classifier/modelos/modelo.pth --json -o resultados.json
+  python cli.py ./documentos/ --json -o resultados.json
+
+  # Usar modelo em outro caminho
+  python cli.py documento.jpg -m /caminho/para/modelo.pth
         """,
     )
 
@@ -67,8 +70,8 @@ Exemplos:
         "--modelo",
         "-m",
         type=str,
-        required=True,
-        help="Caminho do modelo classificador .pth (obrigatório)",
+        default=None,
+        help="Caminho do modelo classificador .pth (default: models/classifier.pth)",
     )
     parser.add_argument(
         "--tipo",

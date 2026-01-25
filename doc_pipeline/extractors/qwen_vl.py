@@ -52,12 +52,22 @@ class QwenVLExtractor(BaseExtractor):
 
         print(f"Carregando modelo {self.model_name}...")
 
-        self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
-            self.model_name,
-            torch_dtype=torch.bfloat16,
-            device_map=self.device,
-            attn_implementation="flash_attention_2",
-        )
+        # Tenta usar flash_attention_2, senão usa sdpa (PyTorch nativo)
+        try:
+            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=self.device,
+                attn_implementation="flash_attention_2",
+            )
+        except Exception:
+            print("Flash Attention 2 não disponível, usando SDPA...")
+            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+                self.model_name,
+                torch_dtype=torch.bfloat16,
+                device_map=self.device,
+                attn_implementation="sdpa",
+            )
 
         self._processor = AutoProcessor.from_pretrained(
             self.model_name,
