@@ -75,6 +75,10 @@ class Settings(BaseSettings):
         le=1.0,
         description="Confiança mínima para classificação",
     )
+    warmup_on_start: bool = Field(
+        default=True,
+        description="Carregar modelos na inicialização (warmup)",
+    )
 
     @field_validator("classifier_model_path", mode="before")
     @classmethod

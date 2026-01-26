@@ -93,9 +93,6 @@ class ClassificationResult(BaseModel):
 
     document_type: DocumentType = Field(description="Tipo do documento classificado")
     confidence: float = Field(ge=0.0, le=1.0, description="Confiança da classificação")
-    all_probabilities: dict[str, float] = Field(
-        default_factory=dict, description="Probabilidades para todas as classes"
-    )
 
 
 class ExtractionResult(BaseModel):

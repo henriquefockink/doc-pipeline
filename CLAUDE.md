@@ -82,8 +82,41 @@ Pre-commit hooks ensure consistent code style:
 - Run `pre-commit run --all-files` to check all files manually
 - Hooks run automatically on `git commit`
 
-## Documentation Lookup
+## Documentation Lookup (Context7)
 
-Always use Context7 MCP tools when searching for library documentation and best practices:
-1. First call `resolve-library-id` to get the Context7-compatible library ID
-2. Then call `query-docs` with the library ID to fetch up-to-date documentation and code examples
+Always use Context7 MCP tools when searching for library documentation and best practices. This ensures you have up-to-date information beyond the knowledge cutoff.
+
+### When to Use Context7
+
+- Looking up API usage for libraries (Pydantic, FastAPI, PyTorch, Transformers, etc.)
+- Checking current best practices or migration guides
+- Finding code examples for specific functionality
+- Verifying correct syntax or parameters for library functions
+
+### How to Use
+
+1. **Resolve the library ID first**:
+   ```
+   mcp__context7__resolve-library-id(libraryName="pydantic", query="how to define model with validators")
+   ```
+
+2. **Query the documentation**:
+   ```
+   mcp__context7__query-docs(libraryId="/pydantic/pydantic", query="how to define model with validators")
+   ```
+
+### Key Libraries for This Project
+
+| Library | Typical Context7 ID |
+|---------|---------------------|
+| Pydantic | `/pydantic/pydantic` |
+| FastAPI | `/fastapi/fastapi` |
+| PyTorch | `/pytorch/pytorch` |
+| Transformers | `/huggingface/transformers` |
+| Pillow | `/python-pillow/pillow` |
+
+### Tips
+
+- Be specific in your query to get relevant results
+- Limit to 3 calls per question to avoid excessive lookups
+- If the user provides a library ID directly (e.g., `/org/project`), skip `resolve-library-id`

@@ -5,7 +5,16 @@ Orquestrador principal do pipeline de documentos.
 from pathlib import Path
 from typing import Iterator
 
+import pillow_heif
 from PIL import Image
+
+# Registra suporte a HEIC/HEIF e AVIF
+pillow_heif.register_heif_opener()
+try:
+    pillow_heif.register_avif_opener()
+except AttributeError:
+    # AVIF support requires pillow-heif >= 0.10.0
+    pass
 
 from .classifier import ClassifierAdapter
 from .config import ExtractorBackend, Settings, get_settings
@@ -194,7 +203,6 @@ class DocumentPipeline:
                 classification=ClassificationResult(
                     document_type=DocumentType.RG_FRENTE,  # placeholder
                     confidence=0.0,
-                    all_probabilities={},
                 ),
                 extraction=None,
                 success=False,
@@ -221,7 +229,10 @@ class DocumentPipeline:
             PipelineResult para cada imagem
         """
         folder = Path(folder)
-        extensions = extensions or ["*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp"]
+        extensions = extensions or [
+            "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp",
+            "*.heic", "*.heif", "*.avif",  # Formatos de smartphone
+        ]
 
         # Padrões a ignorar
         ignore_patterns = ["_gt_", "_segmentation", "_mask", "_ocr"]
@@ -249,3 +260,20 @@ class DocumentPipeline:
         if self._extractor is not None:
             self._extractor.unload_model()
             self._extractor = None
+
+    def warmup(self, load_classifier: bool = True, load_extractor: bool = True) -> None:
+        """
+        Carrega os modelos antecipadamente (warmup).
+
+        Isso inclui download dos pesos se ainda não estiverem em cache.
+
+        Args:
+            load_classifier: Se deve carregar o classificador
+            load_extractor: Se deve carregar o extractor
+        """
+        if load_classifier:
+            # ClassifierAdapter carrega modelo no __init__
+            _ = self.classifier
+        if load_extractor:
+            # Extractor usa lazy loading, precisa chamar load_model() explicitamente
+            self.extractor.load_model()

@@ -87,7 +87,7 @@ class BaseExtractor(ABC):
         return ExtractionResult(
             document_type=document_type,
             data=data,
-            backend=self.backend_name,
+            backend="paneas_v1",
         )
 
     def _load_image(self, image: str | Path | Image.Image) -> Image.Image:

@@ -34,14 +34,18 @@ async def lifespan(app: FastAPI):
     global pipeline
 
     settings = get_settings()
-    print(f"Inicializando pipeline...")
+    print("Inicializando pipeline...")
     print(f"  Classificador: {settings.classifier_model_path}")
     print(f"  Backend extractor: {settings.extractor_backend.value}")
+    print(f"  Warmup: {settings.warmup_on_start}")
 
     pipeline = DocumentPipeline()
 
-    # Pre-load classificador (extractor é lazy-loaded)
-    _ = pipeline.classifier
+    if settings.warmup_on_start:
+        print("Carregando classificador...")
+        pipeline.warmup(load_classifier=True, load_extractor=False)
+        print("Carregando extractor...")
+        pipeline.warmup(load_classifier=False, load_extractor=True)
 
     print("Pipeline pronto!")
     yield
@@ -63,6 +67,7 @@ app = FastAPI(
 class HealthResponse(BaseModel):
     status: str
     classifier_loaded: bool
+    extractor_loaded: bool
     extractor_backend: str
 
 
@@ -82,6 +87,7 @@ async def health():
     return HealthResponse(
         status="ok",
         classifier_loaded=pipeline is not None and pipeline._classifier is not None,
+        extractor_loaded=pipeline is not None and pipeline._extractor is not None,
         extractor_backend=settings.extractor_backend.value,
     )
 

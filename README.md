@@ -31,7 +31,23 @@ pip install -r requirements.txt
 
 # Copie o modelo do classificador para a pasta models/
 cp /caminho/para/modelo.pth models/classifier.pth
+
+# Configure as variáveis de ambiente
+cp .env.example .env
+# Edite o .env e adicione seu HF_TOKEN (obrigatório)
 ```
+
+### Configuração do Hugging Face Token
+
+O token do Hugging Face é **obrigatório** para download dos modelos VLM. Sem ele:
+- Downloads serão mais lentos e com rate limits
+- Modelos gated (como PyAnnote) não funcionarão
+
+1. Crie um token em: https://huggingface.co/settings/tokens
+2. Adicione ao arquivo `.env`:
+   ```env
+   HF_TOKEN=hf_seu_token_aqui
+   ```
 
 ## Quick Start
 
@@ -170,7 +186,16 @@ extraction = pipeline.extract("rg.jpg", DocumentType.RG_FRENTE)
 
 ### Environment Variables
 
+Copie `.env.example` para `.env` e configure:
+
+```bash
+cp .env.example .env
+```
+
 ```env
+# Hugging Face (OBRIGATÓRIO)
+HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+
 # Classificador
 DOC_PIPELINE_CLASSIFIER_MODEL_PATH=models/classifier.pth
 DOC_PIPELINE_CLASSIFIER_MODEL_TYPE=efficientnet_b0
@@ -189,6 +214,7 @@ DOC_PIPELINE_API_PORT=8001
 
 # Geral
 DOC_PIPELINE_MIN_CONFIDENCE=0.5
+DOC_PIPELINE_WARMUP_ON_START=true  # Carrega modelos na inicialização
 ```
 
 ## Requisitos de Hardware
@@ -234,6 +260,7 @@ doc-pipeline/
 - Python 3.12+
 - PyTorch 2.0+
 - transformers 4.49+
+- python-dotenv 1.0+
 - [doc-classifier](https://github.com/henriquefockink/doc-classifier) (dependência local)
 
 ### Opcionais

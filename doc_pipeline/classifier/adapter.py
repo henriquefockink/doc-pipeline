@@ -67,7 +67,6 @@ class ClassifierAdapter:
         return ClassificationResult(
             document_type=DocumentType(result["classe"]),
             confidence=result["confianca"],
-            all_probabilities=result["probabilidades"],
         )
 
     def classify_batch(

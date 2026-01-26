@@ -22,6 +22,7 @@ IMPORTANTE:
 - Se um campo não estiver visível ou legível, retorne null
 - O CPF deve estar no formato ###.###.###-##
 - O RG pode ter formatos variados dependendo do estado
+- FILIAÇÃO: Se houver apenas 1 nome na filiação, coloque em "nome_mae" se for nome feminino, ou em "nome_pai" se for nome masculino. O outro campo deve ser null.
 
 Retorne APENAS um JSON válido com os seguintes campos:
 {
