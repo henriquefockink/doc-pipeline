@@ -61,6 +61,26 @@ python api.py
 # A API estará disponível em http://localhost:8001
 ```
 
+### Expor via ngrok (acesso externo)
+
+```bash
+# Iniciar API + ngrok (persiste após sair do SSH)
+./start-server.sh
+
+# Com domínio customizado (ngrok pago)
+./start-server.sh start meu-dominio.ngrok.io
+# ou
+NGROK_DOMAIN=meu-dominio.ngrok.io ./start-server.sh
+
+# Ver status
+./start-server.sh status
+
+# Parar tudo
+./stop-server.sh
+```
+
+O script usa `screen` para manter os processos rodando em background.
+
 ## Uso
 
 ### CLI
@@ -97,25 +117,45 @@ DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/outro/caminho/modelo.pth python api.py
 
 #### Endpoints
 
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| POST | `/process` | Pipeline completo (classificação + extração) |
-| POST | `/classify` | Apenas classificação |
-| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) |
-| GET | `/health` | Status da API |
-| GET | `/classes` | Lista classes suportadas |
+| Método | Endpoint | Descrição | Auth |
+|--------|----------|-----------|:----:|
+| POST | `/process` | Pipeline completo (classificação + extração) | Sim |
+| POST | `/classify` | Apenas classificação | Sim |
+| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) | Sim |
+| GET | `/health` | Status da API | Não |
+| GET | `/classes` | Lista classes suportadas | Sim |
+
+#### Autenticação
+
+Se `DOC_PIPELINE_API_KEY` estiver configurada no `.env`, todos os endpoints (exceto `/health`) requerem o header `X-API-Key`:
+
+```bash
+# Com autenticação
+curl -X POST http://localhost:8001/process \
+  -H "X-API-Key: sua-api-key-aqui" \
+  -F "arquivo=@documento.jpg"
+```
 
 #### Exemplos
 
 ```bash
 # Pipeline completo
-curl -X POST http://localhost:8001/process -F "arquivo=@documento.jpg"
+curl -X POST http://localhost:8001/process \
+  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+  -F "arquivo=@documento.jpg"
 
 # Apenas classificar
-curl -X POST http://localhost:8001/classify -F "arquivo=@documento.jpg"
+curl -X POST http://localhost:8001/classify \
+  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+  -F "arquivo=@documento.jpg"
 
 # Extrair dados (tipo conhecido)
-curl -X POST "http://localhost:8001/extract?doc_type=rg_frente" -F "arquivo=@rg.jpg"
+curl -X POST "http://localhost:8001/extract?doc_type=rg_frente" \
+  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+  -F "arquivo=@rg.jpg"
+
+# Health check (não requer auth)
+curl http://localhost:8001/health
 ```
 
 ### Python
@@ -211,6 +251,7 @@ DOC_PIPELINE_EXTRACTOR_MODEL_GOT=stepfun-ai/GOT-OCR-2.0-hf
 # API
 DOC_PIPELINE_API_HOST=0.0.0.0
 DOC_PIPELINE_API_PORT=8001
+DOC_PIPELINE_API_KEY=sua-api-key-secreta  # Autenticação (opcional)
 
 # Geral
 DOC_PIPELINE_MIN_CONFIDENCE=0.5
@@ -242,6 +283,8 @@ DOC_PIPELINE_WARMUP_ON_START=true  # Carrega modelos na inicialização
 doc-pipeline/
 ├── api.py                 # FastAPI REST server
 ├── cli.py                 # Command-line interface
+├── start-server.sh        # Script para iniciar API + ngrok
+├── stop-server.sh         # Script para parar todos os serviços
 ├── models/
 │   └── classifier.pth     # Modelo EfficientNet (não versionado)
 ├── doc_pipeline/

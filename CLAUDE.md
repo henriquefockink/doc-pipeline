@@ -31,6 +31,12 @@ python cli.py documento.jpg -m models/classifier.pth --backend got-ocr
 
 # Run API server (uses models/classifier.pth by default)
 python api.py
+
+# Run API server with ngrok (persists after SSH disconnect)
+./start-server.sh                              # Start with random ngrok URL
+./start-server.sh start meu-dominio.ngrok.io   # Start with custom domain (paid ngrok)
+./start-server.sh status                       # Check status
+./stop-server.sh                               # Stop all services
 ```
 
 ## Architecture
@@ -68,6 +74,7 @@ Key settings (all prefixed with `DOC_PIPELINE_`):
 - `CLASSIFIER_MODEL_TYPE`: efficientnet_b0, efficientnet_b2, efficientnet_b4
 - `EXTRACTOR_BACKEND`: qwen-vl (default) or got-ocr
 - `CLASSIFIER_DEVICE` / `EXTRACTOR_DEVICE`: cuda:N or cpu (supports multi-GPU)
+- `API_KEY`: Optional API key for authentication (if set, requires `X-API-Key` header)
 
 ## Document Types
 

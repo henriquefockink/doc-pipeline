@@ -24,9 +24,13 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ REQUISIÇÃO HTTP                                                             │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ curl -X POST http://localhost:8001/process -F "arquivo=@rg_aberto.jpg"      │
+│ curl -X POST http://localhost:8001/process \                                │
+│   -H "X-API-Key: sua-api-key" \                                             │
+│   -F "arquivo=@rg_aberto.jpg"                                               │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **Nota**: O header `X-API-Key` é obrigatório se `DOC_PIPELINE_API_KEY` estiver configurado.
 
 ### 2. FastAPI - Recepção
 
@@ -231,10 +235,56 @@ Quando a confiança está abaixo do mínimo:
 
 ## Endpoints Disponíveis
 
-| Método | Endpoint | Descrição | Usa Classificador | Usa Extrator |
-|--------|----------|-----------|:-----------------:|:------------:|
-| POST | `/process` | Pipeline completo | ✅ | ✅ |
-| POST | `/classify` | Apenas classificação | ✅ | ❌ |
-| POST | `/extract?doc_type=...` | Apenas extração | ❌ | ✅ |
-| GET | `/health` | Status da API | ❌ | ❌ |
-| GET | `/classes` | Lista classes | ❌ | ❌ |
+| Método | Endpoint | Descrição | Usa Classificador | Usa Extrator | Auth |
+|--------|----------|-----------|:-----------------:|:------------:|:----:|
+| POST | `/process` | Pipeline completo | ✅ | ✅ | ✅ |
+| POST | `/classify` | Apenas classificação | ✅ | ❌ | ✅ |
+| POST | `/extract?doc_type=...` | Apenas extração | ❌ | ✅ | ✅ |
+| GET | `/health` | Status da API | ❌ | ❌ | ❌ |
+| GET | `/classes` | Lista classes | ❌ | ❌ | ✅ |
+
+---
+
+## Autenticação
+
+Se a variável `DOC_PIPELINE_API_KEY` estiver configurada no `.env`, a API requer autenticação via header `X-API-Key` em todos os endpoints exceto `/health`.
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ FLUXO DE AUTENTICAÇÃO                                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Request ──► API Key configurada? ──► NÃO ──► Acesso liberado              │
+│                      │                                                      │
+│                     SIM                                                     │
+│                      │                                                      │
+│                      ▼                                                      │
+│               Header X-API-Key presente? ──► NÃO ──► 401 Unauthorized       │
+│                      │                                                      │
+│                     SIM                                                     │
+│                      │                                                      │
+│                      ▼                                                      │
+│               Key válida? ──► NÃO ──► 403 Forbidden                         │
+│                      │                                                      │
+│                     SIM                                                     │
+│                      │                                                      │
+│                      ▼                                                      │
+│               Acesso liberado                                               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Exemplos com Autenticação
+
+```bash
+# Variável de ambiente (recomendado)
+export DOC_PIPELINE_API_KEY="sua-api-key-aqui"
+
+# Pipeline completo
+curl -X POST http://localhost:8001/process \
+  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+  -F "arquivo=@documento.jpg"
+
+# Health check (não requer auth)
+curl http://localhost:8001/health
+```

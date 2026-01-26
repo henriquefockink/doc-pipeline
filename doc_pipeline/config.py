@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     # API settings
     api_host: str = Field(default="0.0.0.0", description="Host da API")
     api_port: int = Field(default=8001, description="Porta da API")
+    api_key: str | None = Field(default=None, description="API key para autenticação")
 
     # General settings
     min_confidence: float = Field(
