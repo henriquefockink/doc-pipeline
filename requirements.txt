@@ -20,6 +20,10 @@ fastapi>=0.109.0
 uvicorn>=0.27.0
 python-multipart>=0.0.9
 
+# Observability
+structlog>=24.0.0
+prometheus-client>=0.20.0
+
 # Image processing
 pillow>=10.0.0
 pillow-heif>=0.16.0  # Suporte a HEIC/HEIF (iPhone) e AVIF

@@ -4,26 +4,40 @@ API REST para o pipeline de classificação e extração de documentos.
 """
 
 import io
+import time
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, File, HTTPException, Query, Security, UploadFile
+import structlog
+from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Security, UploadFile
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
 from PIL import Image
 from pydantic import BaseModel
 
 from doc_pipeline import DocumentPipeline, PipelineResult
-from doc_pipeline.config import ExtractorBackend, get_settings
+from doc_pipeline.config import get_settings
+from doc_pipeline.observability import (
+    PrometheusMiddleware,
+    get_logger,
+    get_metrics,
+    metrics_endpoint,
+    setup_logging,
+)
 from doc_pipeline.schemas import (
     ClassificationResult,
-    CNHData,
     DocumentType,
     ExtractionResult,
-    RGData,
 )
 
+# Setup logging antes de tudo
+settings = get_settings()
+setup_logging(
+    json_format=settings.log_json,
+    log_level=settings.log_level,
+)
+
+logger = get_logger("api")
 
 # Global pipeline instance
 pipeline: DocumentPipeline | None = None
@@ -32,7 +46,10 @@ pipeline: DocumentPipeline | None = None
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
-async def verify_api_key(api_key: str = Security(api_key_header)) -> str:
+async def verify_api_key(
+    request: Request,
+    api_key: str = Security(api_key_header),
+) -> str:
     """Valida a API key se configurada."""
     settings = get_settings()
 
@@ -41,12 +58,22 @@ async def verify_api_key(api_key: str = Security(api_key_header)) -> str:
         return "no-auth"
 
     if not api_key:
+        logger.warning(
+            "request_unauthorized",
+            path=request.url.path,
+            reason="missing_api_key",
+        )
         raise HTTPException(
             status_code=401,
             detail="API key não fornecida. Use o header X-API-Key.",
         )
 
     if api_key != settings.api_key:
+        logger.warning(
+            "request_forbidden",
+            path=request.url.path,
+            reason="invalid_api_key",
+        )
         raise HTTPException(
             status_code=403,
             detail="API key inválida.",
@@ -61,26 +88,33 @@ async def lifespan(app: FastAPI):
     global pipeline
 
     settings = get_settings()
-    print("Inicializando pipeline...")
-    print(f"  Classificador: {settings.classifier_model_path}")
-    print(f"  Backend extractor: {settings.extractor_backend.value}")
-    print(f"  Warmup: {settings.warmup_on_start}")
-    print(f"  Autenticação: {'Ativada' if settings.api_key else 'Desativada'}")
+    logger.info(
+        "startup",
+        classifier_model=str(settings.classifier_model_path),
+        extractor_backend=settings.extractor_backend.value,
+        warmup=settings.warmup_on_start,
+        auth_enabled=bool(settings.api_key),
+    )
 
     pipeline = DocumentPipeline()
 
     if settings.warmup_on_start:
-        print("Carregando classificador...")
+        logger.info("warmup_start", component="classifier")
         pipeline.warmup(load_classifier=True, load_extractor=False)
-        print("Carregando extractor...")
-        pipeline.warmup(load_classifier=False, load_extractor=True)
+        logger.info("warmup_complete", component="classifier")
 
-    print("Pipeline pronto!")
+        logger.info("warmup_start", component="extractor")
+        pipeline.warmup(load_classifier=False, load_extractor=True)
+        logger.info("warmup_complete", component="extractor")
+
+    logger.info("startup_complete")
     yield
 
     # Cleanup
+    logger.info("shutdown_start")
     if pipeline:
         pipeline.unload_extractor()
+    logger.info("shutdown_complete")
 
 
 app = FastAPI(
@@ -89,6 +123,9 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Adiciona middleware de métricas
+app.add_middleware(PrometheusMiddleware, exclude_paths=["/metrics", "/health"])
 
 
 # Response models
@@ -106,6 +143,12 @@ class ClassesResponse(BaseModel):
 class ErrorResponse(BaseModel):
     error: str
     detail: str | None = None
+
+
+@app.get("/metrics")
+async def metrics():
+    """Endpoint para Prometheus scraping."""
+    return metrics_endpoint()
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -131,6 +174,7 @@ async def list_classes(_: str = Depends(verify_api_key)):
 
 @app.post("/classify", response_model=ClassificationResult)
 async def classify(
+    request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     _: str = Depends(verify_api_key),
 ):
@@ -142,17 +186,47 @@ async def classify(
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline não inicializado")
 
+    metrics = get_metrics()
+    start_time = time.perf_counter()
+
     try:
         contents = await arquivo.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         result = pipeline.classify(image)
+
+        # Métricas de negócio
+        metrics.documents_processed.labels(
+            document_type=result.document_type.value,
+            operation="classify",
+        ).inc()
+        metrics.classification_confidence.labels(
+            document_type=result.document_type.value,
+        ).observe(result.confidence)
+
+        duration = time.perf_counter() - start_time
+        logger.info(
+            "classify_success",
+            document_type=result.document_type.value,
+            confidence=round(result.confidence, 3),
+            duration_ms=round(duration * 1000, 2),
+            filename=arquivo.filename,
+        )
+
         return result
+
     except Exception as e:
+        logger.error(
+            "classify_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            filename=arquivo.filename,
+        )
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/extract", response_model=ExtractionResult)
 async def extract(
+    request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     doc_type: Annotated[str, Query(description="Tipo do documento (rg_frente, cnh_frente, etc)")],
     _: str = Depends(verify_api_key),
@@ -168,22 +242,54 @@ async def extract(
     try:
         document_type = DocumentType(doc_type)
     except ValueError:
+        logger.warning(
+            "extract_invalid_type",
+            doc_type=doc_type,
+            filename=arquivo.filename,
+        )
         raise HTTPException(
             status_code=400,
             detail=f"Tipo de documento inválido: {doc_type}. Valores válidos: {[d.value for d in DocumentType]}",
         )
 
+    metrics = get_metrics()
+    start_time = time.perf_counter()
+
     try:
         contents = await arquivo.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
         result = pipeline.extract(image, document_type)
+
+        # Métricas de negócio
+        metrics.documents_processed.labels(
+            document_type=document_type.value,
+            operation="extract",
+        ).inc()
+
+        duration = time.perf_counter() - start_time
+        logger.info(
+            "extract_success",
+            document_type=document_type.value,
+            duration_ms=round(duration * 1000, 2),
+            filename=arquivo.filename,
+        )
+
         return result
+
     except Exception as e:
+        logger.error(
+            "extract_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            doc_type=doc_type,
+            filename=arquivo.filename,
+        )
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/process", response_model=PipelineResult)
 async def process(
+    request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     extract: Annotated[bool, Query(description="Se deve extrair dados")] = True,
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Confiança mínima")] = 0.5,
@@ -197,6 +303,9 @@ async def process(
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline não inicializado")
 
+    metrics = get_metrics()
+    start_time = time.perf_counter()
+
     try:
         contents = await arquivo.read()
         image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -205,8 +314,36 @@ async def process(
             extract=extract,
             min_confidence=min_confidence,
         )
+
+        # Métricas de negócio
+        doc_type = result.classification.document_type.value
+        metrics.documents_processed.labels(
+            document_type=doc_type,
+            operation="process",
+        ).inc()
+        metrics.classification_confidence.labels(
+            document_type=doc_type,
+        ).observe(result.classification.confidence)
+
+        duration = time.perf_counter() - start_time
+        logger.info(
+            "process_success",
+            document_type=doc_type,
+            confidence=round(result.classification.confidence, 3),
+            extracted=result.extraction is not None,
+            duration_ms=round(duration * 1000, 2),
+            filename=arquivo.filename,
+        )
+
         return result
+
     except Exception as e:
+        logger.error(
+            "process_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            filename=arquivo.filename,
+        )
         raise HTTPException(status_code=400, detail=str(e))
 
 
@@ -215,11 +352,17 @@ def main():
     import uvicorn
 
     settings = get_settings()
+    logger.info(
+        "server_start",
+        host=settings.api_host,
+        port=settings.api_port,
+    )
     uvicorn.run(
         "api:app",
         host=settings.api_host,
         port=settings.api_port,
         reload=False,
+        access_log=False,  # Desabilita access log do uvicorn, usamos structlog
     )
 
 

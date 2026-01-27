@@ -66,7 +66,7 @@ class Settings(BaseSettings):
 
     # API settings
     api_host: str = Field(default="0.0.0.0", description="Host da API")
-    api_port: int = Field(default=8001, description="Porta da API")
+    api_port: int = Field(default=9000, description="Porta da API")
     api_key: str | None = Field(default=None, description="API key para autenticação")
 
     # General settings
@@ -79,6 +79,16 @@ class Settings(BaseSettings):
     warmup_on_start: bool = Field(
         default=True,
         description="Carregar modelos na inicialização (warmup)",
+    )
+
+    # Logging settings
+    log_level: str = Field(
+        default="INFO",
+        description="Nível de log (DEBUG, INFO, WARNING, ERROR)",
+    )
+    log_json: bool = Field(
+        default=True,
+        description="Logs em formato JSON (True) ou colorido (False)",
     )
 
     @field_validator("classifier_model_path", mode="before")

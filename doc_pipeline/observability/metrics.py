@@ -1,0 +1,166 @@
+"""Métricas Prometheus para a API."""
+
+import time
+from typing import Callable
+
+from fastapi import Request, Response
+from fastapi.responses import PlainTextResponse
+from fastapi.routing import APIRoute
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class Metrics:
+    """Container para métricas Prometheus."""
+
+    def __init__(self, namespace: str = "doc_pipeline"):
+        self.namespace = namespace
+
+        # Requests totais por endpoint, método e status
+        self.requests_total = Counter(
+            f"{namespace}_requests_total",
+            "Total de requests",
+            ["method", "endpoint", "status"],
+        )
+
+        # Latência dos requests (histograma)
+        self.request_duration_seconds = Histogram(
+            f"{namespace}_request_duration_seconds",
+            "Duração dos requests em segundos",
+            ["method", "endpoint"],
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+        )
+
+        # Requests em andamento
+        self.requests_in_progress = Gauge(
+            f"{namespace}_requests_in_progress",
+            "Requests sendo processados",
+            ["method", "endpoint"],
+        )
+
+        # Erros por tipo
+        self.errors_total = Counter(
+            f"{namespace}_errors_total",
+            "Total de erros",
+            ["method", "endpoint", "error_type"],
+        )
+
+        # Métricas de negócio
+        self.documents_processed = Counter(
+            f"{namespace}_documents_processed_total",
+            "Total de documentos processados",
+            ["document_type", "operation"],
+        )
+
+        self.classification_confidence = Histogram(
+            f"{namespace}_classification_confidence",
+            "Confiança das classificações",
+            ["document_type"],
+            buckets=(0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 0.95, 0.99),
+        )
+
+        # GPU memory (se disponível)
+        self.gpu_memory_used_bytes = Gauge(
+            f"{namespace}_gpu_memory_used_bytes",
+            "Memória GPU em uso",
+        )
+
+
+# Singleton global
+_metrics: Metrics | None = None
+
+
+def get_metrics() -> Metrics:
+    """Retorna a instância global de métricas."""
+    global _metrics
+    if _metrics is None:
+        _metrics = Metrics()
+    return _metrics
+
+
+def metrics_endpoint() -> Response:
+    """Endpoint /metrics para Prometheus scraping."""
+    return PlainTextResponse(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
+
+class PrometheusMiddleware(BaseHTTPMiddleware):
+    """Middleware que coleta métricas de cada request."""
+
+    def __init__(self, app, exclude_paths: list[str] | None = None):
+        super().__init__(app)
+        self.exclude_paths = exclude_paths or ["/metrics", "/health"]
+        self.metrics = get_metrics()
+
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        # Não coleta métricas para paths excluídos
+        if request.url.path in self.exclude_paths:
+            return await call_next(request)
+
+        method = request.method
+        # Normaliza path para evitar explosão de cardinalidade
+        endpoint = self._normalize_path(request.url.path)
+
+        # Incrementa requests em andamento
+        self.metrics.requests_in_progress.labels(
+            method=method,
+            endpoint=endpoint,
+        ).inc()
+
+        start_time = time.perf_counter()
+        status_code = 500
+        error_type = None
+
+        try:
+            response = await call_next(request)
+            status_code = response.status_code
+            return response
+
+        except Exception as e:
+            error_type = type(e).__name__
+            raise
+
+        finally:
+            # Calcula duração
+            duration = time.perf_counter() - start_time
+
+            # Decrementa requests em andamento
+            self.metrics.requests_in_progress.labels(
+                method=method,
+                endpoint=endpoint,
+            ).dec()
+
+            # Registra request
+            self.metrics.requests_total.labels(
+                method=method,
+                endpoint=endpoint,
+                status=str(status_code),
+            ).inc()
+
+            # Registra latência
+            self.metrics.request_duration_seconds.labels(
+                method=method,
+                endpoint=endpoint,
+            ).observe(duration)
+
+            # Registra erro se houve
+            if error_type:
+                self.metrics.errors_total.labels(
+                    method=method,
+                    endpoint=endpoint,
+                    error_type=error_type,
+                ).inc()
+
+    def _normalize_path(self, path: str) -> str:
+        """Normaliza path para evitar alta cardinalidade."""
+        # Remove trailing slash
+        path = path.rstrip("/") or "/"
+        return path
