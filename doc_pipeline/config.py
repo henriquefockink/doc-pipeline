@@ -67,7 +67,21 @@ class Settings(BaseSettings):
     # API settings
     api_host: str = Field(default="0.0.0.0", description="Host da API")
     api_port: int = Field(default=9000, description="Porta da API")
-    api_key: str | None = Field(default=None, description="API key para autenticação")
+
+    # Authentication settings
+    api_key: str | None = Field(default=None, description="API key master (env)")
+    api_keys: str | None = Field(default=None, description="Lista de API keys master separadas por vírgula")
+    database_url: str | None = Field(default=None, description="PostgreSQL URL para API keys dinâmicas")
+
+    @property
+    def api_keys_list(self) -> list[str]:
+        """Retorna lista de API keys do ambiente."""
+        keys = []
+        if self.api_key:
+            keys.append(self.api_key)
+        if self.api_keys:
+            keys.extend([k.strip() for k in self.api_keys.split(",") if k.strip()])
+        return keys
 
     # General settings
     min_confidence: float = Field(

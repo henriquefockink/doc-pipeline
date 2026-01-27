@@ -24,6 +24,9 @@ python-multipart>=0.0.9
 structlog>=24.0.0
 prometheus-client>=0.20.0
 
+# Database (auth)
+asyncpg>=0.29.0
+
 # Image processing
 pillow>=10.0.0
 pillow-heif>=0.16.0  # Suporte a HEIC/HEIF (iPhone) e AVIF
