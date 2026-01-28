@@ -1,0 +1,50 @@
+# Prometheus configuration for doc-pipeline
+# Place in /etc/prometheus/prometheus.yml or mount as volume
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+          # - alertmanager:9093
+
+rule_files:
+  # - /etc/prometheus/rules/*.yml
+
+scrape_configs:
+  # Doc Pipeline API
+  - job_name: 'doc-pipeline'
+    static_configs:
+      - targets: ['doc-pipeline-api:8000']
+        labels:
+          service: 'doc-pipeline'
+          env: 'production'
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # If running multiple instances
+  # - job_name: 'doc-pipeline-cluster'
+  #   static_configs:
+  #     - targets:
+  #       - 'doc-pipeline-api-1:8000'
+  #       - 'doc-pipeline-api-2:8000'
+
+  # For Kubernetes with service discovery
+  # - job_name: 'doc-pipeline-k8s'
+  #   kubernetes_sd_configs:
+  #     - role: pod
+  #   relabel_configs:
+  #     - source_labels: [__meta_kubernetes_pod_label_app]
+  #       regex: doc-pipeline
+  #       action: keep
+  #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+  #       action: keep
+  #       regex: true
+  #     - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+  #       action: replace
+  #       target_label: __metrics_path__
+  #       regex: (.+)

@@ -86,8 +86,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Adiciona middleware de métricas
-app.add_middleware(PrometheusMiddleware, exclude_paths=["/metrics", "/health"])
+# Adiciona middleware de métricas (api_only=True filtra apenas endpoints da API)
+app.add_middleware(PrometheusMiddleware)
 
 
 # Response models
@@ -150,6 +150,7 @@ async def classify(
 
     metrics = get_metrics()
     start_time = time.perf_counter()
+    client = auth.client_name or "unknown"
 
     try:
         contents = await arquivo.read()
@@ -164,6 +165,11 @@ async def classify(
         metrics.classification_confidence.labels(
             document_type=result.document_type.value,
         ).observe(result.confidence)
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/classify",
+            status="200",
+        ).inc()
 
         duration = time.perf_counter() - start_time
         logger.info(
@@ -172,16 +178,23 @@ async def classify(
             confidence=round(result.confidence, 3),
             duration_ms=round(duration * 1000, 2),
             filename=arquivo.filename,
+            client=client,
         )
 
         return result
 
     except Exception as e:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/classify",
+            status="400",
+        ).inc()
         logger.error(
             "classify_error",
             error=str(e),
             error_type=type(e).__name__,
             filename=arquivo.filename,
+            client=client,
         )
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -201,20 +214,28 @@ async def extract(
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline não inicializado")
 
+    metrics = get_metrics()
+    client = auth.client_name or "unknown"
+
     try:
         document_type = DocumentType(doc_type)
     except ValueError:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/extract",
+            status="400",
+        ).inc()
         logger.warning(
             "extract_invalid_type",
             doc_type=doc_type,
             filename=arquivo.filename,
+            client=client,
         )
         raise HTTPException(
             status_code=400,
             detail=f"Tipo de documento inválido: {doc_type}. Valores válidos: {[d.value for d in DocumentType]}",
         )
 
-    metrics = get_metrics()
     start_time = time.perf_counter()
 
     try:
@@ -227,6 +248,11 @@ async def extract(
             document_type=document_type.value,
             operation="extract",
         ).inc()
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/extract",
+            status="200",
+        ).inc()
 
         duration = time.perf_counter() - start_time
         logger.info(
@@ -234,17 +260,24 @@ async def extract(
             document_type=document_type.value,
             duration_ms=round(duration * 1000, 2),
             filename=arquivo.filename,
+            client=client,
         )
 
         return result
 
     except Exception as e:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/extract",
+            status="400",
+        ).inc()
         logger.error(
             "extract_error",
             error=str(e),
             error_type=type(e).__name__,
             doc_type=doc_type,
             filename=arquivo.filename,
+            client=client,
         )
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -267,6 +300,7 @@ async def process(
 
     metrics = get_metrics()
     start_time = time.perf_counter()
+    client = auth.client_name or "unknown"
 
     try:
         contents = await arquivo.read()
@@ -286,6 +320,11 @@ async def process(
         metrics.classification_confidence.labels(
             document_type=doc_type,
         ).observe(result.classification.confidence)
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/process",
+            status="200",
+        ).inc()
 
         duration = time.perf_counter() - start_time
         logger.info(
@@ -295,16 +334,23 @@ async def process(
             extracted=result.extraction is not None,
             duration_ms=round(duration * 1000, 2),
             filename=arquivo.filename,
+            client=client,
         )
 
         return result
 
     except Exception as e:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/process",
+            status="400",
+        ).inc()
         logger.error(
             "process_error",
             error=str(e),
             error_type=type(e).__name__,
             filename=arquivo.filename,
+            client=client,
         )
         raise HTTPException(status_code=400, detail=str(e))
 

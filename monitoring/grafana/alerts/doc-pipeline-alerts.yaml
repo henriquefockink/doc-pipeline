@@ -1,0 +1,475 @@
+# Grafana Alert Rules for Doc Pipeline
+# Import via Grafana UI: Alerting > Alert rules > Import
+# Or place in grafana provisioning: /etc/grafana/provisioning/alerting/
+#
+# Endpoints monitorados: /classify, /extract, /process
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: doc-pipeline-alerts
+    folder: Doc Pipeline
+    interval: 1m
+    rules:
+      # ============================================================
+      # AVAILABILITY ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-high-error-rate
+        title: High Error Rate (5xx)
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(doc_pipeline_requests_total{status=~"5..", endpoint=~"/classify|/extract|/process"}[5m]))
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(doc_pipeline_requests_total{endpoint=~"/classify|/extract|/process"}[5m]))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A / $B
+              conditions:
+                - evaluator:
+                    params: [0.05]
+                    type: gt
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High 5xx error rate detected"
+          description: "Error rate is {{ $values.C.Value | printf \"%.2f\" }}% (threshold: 5%)"
+        labels:
+          severity: critical
+          service: doc-pipeline
+
+      - uid: doc-pipeline-high-4xx-rate
+        title: High Client Error Rate (4xx)
+        condition: C
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(doc_pipeline_requests_total{status=~"4..", endpoint=~"/classify|/extract|/process"}[5m]))
+          - refId: B
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(doc_pipeline_requests_total{endpoint=~"/classify|/extract|/process"}[5m]))
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              type: math
+              expression: $A / $B
+              conditions:
+                - evaluator:
+                    params: [0.20]
+                    type: gt
+        noDataState: OK
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "High 4xx client error rate"
+          description: "Client error rate is {{ $values.C.Value | printf \"%.2f\" }}% (threshold: 20%)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+
+      - uid: doc-pipeline-no-requests
+        title: No Traffic
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(rate(doc_pipeline_requests_total{endpoint=~"/classify|/extract|/process"}[10m])) == 0
+        noDataState: Alerting
+        execErrState: Error
+        for: 10m
+        annotations:
+          summary: "No traffic to doc-pipeline"
+          description: "No requests received in the last 10 minutes. Service may be down."
+        labels:
+          severity: critical
+          service: doc-pipeline
+
+      # ============================================================
+      # LATENCY ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-high-latency-p95
+        title: High Latency P95
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(doc_pipeline_request_duration_seconds_bucket{endpoint=~"/classify|/extract|/process"}[5m])) by (le)
+                ) > 30
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High P95 latency"
+          description: "P95 latency is {{ $values.A.Value | printf \"%.2f\" }}s (threshold: 30s)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+
+      - uid: doc-pipeline-high-latency-p99
+        title: Critical Latency P99
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.99,
+                  sum(rate(doc_pipeline_request_duration_seconds_bucket{endpoint=~"/classify|/extract|/process"}[5m])) by (le)
+                ) > 60
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Critical P99 latency"
+          description: "P99 latency is {{ $values.A.Value | printf \"%.2f\" }}s (threshold: 60s)"
+        labels:
+          severity: critical
+          service: doc-pipeline
+
+      - uid: doc-pipeline-process-latency
+        title: /process Endpoint Latency High
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(doc_pipeline_request_duration_seconds_bucket{endpoint="/process"}[5m])) by (le)
+                ) > 45
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High latency on /process endpoint"
+          description: "/process P95 latency is {{ $values.A.Value | printf \"%.2f\" }}s (threshold: 45s)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+          endpoint: process
+
+      - uid: doc-pipeline-classify-latency
+        title: /classify Endpoint Latency High
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(doc_pipeline_request_duration_seconds_bucket{endpoint="/classify"}[5m])) by (le)
+                ) > 5
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High latency on /classify endpoint"
+          description: "/classify P95 latency is {{ $values.A.Value | printf \"%.2f\" }}s (threshold: 5s)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+          endpoint: classify
+
+      # ============================================================
+      # SATURATION ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-high-concurrency
+        title: High Request Concurrency
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: sum(doc_pipeline_requests_in_progress{endpoint=~"/classify|/extract|/process"}) > 10
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High request concurrency"
+          description: "{{ $values.A.Value }} requests in progress (threshold: 10)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+
+      # ============================================================
+      # BUSINESS METRICS ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-low-confidence
+        title: Low Classification Confidence
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.5,
+                  sum(rate(doc_pipeline_classification_confidence_bucket[10m])) by (le)
+                ) < 0.7
+        noDataState: OK
+        execErrState: Error
+        for: 15m
+        annotations:
+          summary: "Low classification confidence"
+          description: "Median confidence is {{ $values.A.Value | printf \"%.2f\" }} (threshold: 0.7)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+
+      - uid: doc-pipeline-very-low-confidence
+        title: Very Low Classification Confidence
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.5,
+                  sum(rate(doc_pipeline_classification_confidence_bucket[5m])) by (le)
+                ) < 0.5
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Very low classification confidence - model may be degraded"
+          description: "Median confidence dropped to {{ $values.A.Value | printf \"%.2f\" }} (threshold: 0.5)"
+        labels:
+          severity: critical
+          service: doc-pipeline
+
+      # ============================================================
+      # ERROR TYPE ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-validation-errors
+        title: High Validation Error Rate
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_errors_total{error_type="ValidationError", endpoint=~"/classify|/extract|/process"}[5m])) > 0.1
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High validation error rate"
+          description: "Many requests failing validation. Check input format or API changes."
+        labels:
+          severity: warning
+          service: doc-pipeline
+
+      - uid: doc-pipeline-model-errors
+        title: Model/Inference Errors
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_errors_total{error_type=~"RuntimeError|CUDA.*|OutOfMemory.*", endpoint=~"/classify|/extract|/process"}[5m])) > 0
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: "Model/Inference errors detected"
+          description: "GPU or model errors occurring. Check GPU memory and model status."
+        labels:
+          severity: critical
+          service: doc-pipeline
+
+      # ============================================================
+      # PER-ENDPOINT ERROR ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-classify-errors
+        title: /classify Endpoint Errors
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_requests_total{endpoint="/classify", status=~"5.."}[5m]))
+                / sum(rate(doc_pipeline_requests_total{endpoint="/classify"}[5m])) > 0.05
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High error rate on /classify"
+          description: "/classify error rate > 5%. Classification model may have issues."
+        labels:
+          severity: critical
+          service: doc-pipeline
+          endpoint: classify
+
+      - uid: doc-pipeline-extract-errors
+        title: /extract Endpoint Errors
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_requests_total{endpoint="/extract", status=~"5.."}[5m]))
+                / sum(rate(doc_pipeline_requests_total{endpoint="/extract"}[5m])) > 0.05
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High error rate on /extract"
+          description: "/extract error rate > 5%. VLM extraction may have issues."
+        labels:
+          severity: critical
+          service: doc-pipeline
+          endpoint: extract
+
+      - uid: doc-pipeline-process-errors
+        title: /process Endpoint Errors
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_requests_total{endpoint="/process", status=~"5.."}[5m]))
+                / sum(rate(doc_pipeline_requests_total{endpoint="/process"}[5m])) > 0.05
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High error rate on /process"
+          description: "/process error rate > 5%. Full pipeline may have issues."
+        labels:
+          severity: critical
+          service: doc-pipeline
+          endpoint: process
+
+      # ============================================================
+      # SLO ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-slo-availability
+        title: "SLO: Availability Below 99%"
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (
+                  1 - (
+                    sum(rate(doc_pipeline_requests_total{status=~"5..", endpoint=~"/classify|/extract|/process"}[1h]))
+                    /
+                    sum(rate(doc_pipeline_requests_total{endpoint=~"/classify|/extract|/process"}[1h]))
+                  )
+                ) < 0.99
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "SLO: Availability below 99%"
+          description: "Service availability is {{ $values.A.Value | printf \"%.4f\" }} (target: 99%)"
+        labels:
+          severity: critical
+          service: doc-pipeline
+          slo: availability
+
+      - uid: doc-pipeline-slo-latency
+        title: "SLO: Latency Below Target"
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 3600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (
+                  sum(rate(doc_pipeline_request_duration_seconds_bucket{le="30", endpoint=~"/classify|/extract|/process"}[1h]))
+                  /
+                  sum(rate(doc_pipeline_request_duration_seconds_count{endpoint=~"/classify|/extract|/process"}[1h]))
+                ) < 0.95
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "SLO: <95% of requests under 30s"
+          description: "Only {{ $values.A.Value | printf \"%.2f\" }}% of requests completing under 30s (target: 95%)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+          slo: latency

@@ -58,6 +58,13 @@ class Metrics:
             ["document_type", "operation"],
         )
 
+        # Requests por cliente (API key)
+        self.requests_by_client = Counter(
+            f"{namespace}_requests_by_client_total",
+            "Total de requests por cliente",
+            ["client", "endpoint", "status"],
+        )
+
         self.classification_confidence = Histogram(
             f"{namespace}_classification_confidence",
             "Confiança das classificações",
@@ -95,14 +102,51 @@ def metrics_endpoint() -> Response:
 class PrometheusMiddleware(BaseHTTPMiddleware):
     """Middleware que coleta métricas de cada request."""
 
-    def __init__(self, app, exclude_paths: list[str] | None = None):
+    # Prefixos de paths para ignorar (arquivos estáticos, assets, etc.)
+    DEFAULT_EXCLUDE_PREFIXES = (
+        "/metrics",
+        "/health",
+        "/docs",
+        "/redoc",
+        "/openapi",
+        "/favicon",
+        "/static",
+        "/assets",
+        "/fonts",
+        "/_next",
+    )
+
+    # Endpoints da API que devem ser monitorados
+    API_ENDPOINTS = {"/classify", "/extract", "/process"}
+
+    def __init__(
+        self,
+        app,
+        exclude_prefixes: tuple[str, ...] | None = None,
+        api_only: bool = True,
+    ):
         super().__init__(app)
-        self.exclude_paths = exclude_paths or ["/metrics", "/health"]
+        self.exclude_prefixes = exclude_prefixes or self.DEFAULT_EXCLUDE_PREFIXES
+        self.api_only = api_only
         self.metrics = get_metrics()
+
+    def _should_track(self, path: str) -> bool:
+        """Verifica se o path deve ter métricas coletadas."""
+        # Ignora prefixos conhecidos
+        for prefix in self.exclude_prefixes:
+            if path.startswith(prefix):
+                return False
+
+        # Se api_only=True, só coleta para endpoints conhecidos
+        if self.api_only:
+            normalized = path.rstrip("/") or "/"
+            return normalized in self.API_ENDPOINTS
+
+        return True
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         # Não coleta métricas para paths excluídos
-        if request.url.path in self.exclude_paths:
+        if not self._should_track(request.url.path):
             return await call_next(request)
 
         method = request.method
