@@ -57,11 +57,16 @@ cp grafana/dashboards/doc-pipeline.json /etc/grafana/provisioning/dashboards/
 # Cria API token no Grafana:
 # Administration > Service accounts > Add service account > Add token
 
-# Executa o script (detecta datasource automaticamente)
-./scripts/create-alerts.sh https://seu-grafana.com glsa_xxxxxxxxxxxx
+# Opcao 1: Configura no .env (recomendado)
+echo "GRAFANA_URL=https://seu-grafana.com" >> .env
+echo "GRAFANA_TOKEN=glsa_xxxxxxxxxxxx" >> .env
+./monitoring/scripts/create-alerts.sh
 
-# Ou com datasource UID manual
-./scripts/create-alerts.sh https://seu-grafana.com glsa_xxx abc123def456
+# Opcao 2: Passa como argumentos
+./monitoring/scripts/create-alerts.sh https://seu-grafana.com glsa_xxxxxxxxxxxx
+
+# Opcao 3: Com datasource UID manual
+./monitoring/scripts/create-alerts.sh https://seu-grafana.com glsa_xxx abc123def456
 ```
 
 ### Via Provisioning (requer acesso ao servidor)

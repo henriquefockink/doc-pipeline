@@ -1,19 +1,31 @@
 #!/bin/bash
 # Script para criar alertas no Grafana via API
 #
-# Uso: ./create-alerts.sh <grafana_url> <api_token> [datasource_uid]
+# Uso: ./create-alerts.sh [grafana_url] [api_token] [datasource_uid]
+#
+# Variáveis de ambiente (ou .env):
+#   GRAFANA_URL   - URL do Grafana
+#   GRAFANA_TOKEN - Token de API (glsa_xxx) ou user:password
 #
 # Exemplos:
-#   ./create-alerts.sh https://grafana.exemplo.com glsa_xxxxxxxxxxxx
-#   ./create-alerts.sh https://grafana.exemplo.com admin:senha
-#   ./create-alerts.sh https://grafana.exemplo.com glsa_xxx dfakn4he9o4xsa
+#   ./create-alerts.sh                                          # usa .env
+#   ./create-alerts.sh https://grafana.exemplo.com glsa_xxx     # passa como argumento
 #
 # Se datasource_uid não for informado, busca automaticamente o primeiro Prometheus.
 
 set -e
 
-GRAFANA_URL="${1:-http://localhost:3000}"
-AUTH="${2:-admin:admin}"
+# Carrega .env se existir (busca no diretório do script ou no diretório atual)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$SCRIPT_DIR/../../.env" ]; then
+    source "$SCRIPT_DIR/../../.env"
+elif [ -f ".env" ]; then
+    source ".env"
+fi
+
+# Parâmetros: argumentos > variáveis de ambiente > defaults
+GRAFANA_URL="${1:-${GRAFANA_URL:-http://localhost:3000}}"
+AUTH="${2:-${GRAFANA_TOKEN:-admin:admin}}"
 DS_UID_OVERRIDE="${3:-}"
 
 # Remove trailing slash
