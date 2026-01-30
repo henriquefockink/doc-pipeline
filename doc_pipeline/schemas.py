@@ -22,6 +22,12 @@ class DocumentType(str, Enum):
     CNH_FRENTE = "cnh_frente"
     CNH_VERSO = "cnh_verso"
 
+    # Generic (OCR puro)
+    GENERIC = "generic"
+
+    # Unknown (para casos de erro)
+    UNKNOWN = "unknown"
+
     @property
     def is_rg(self) -> bool:
         """Verifica se é um documento RG."""
@@ -33,13 +39,31 @@ class DocumentType(str, Enum):
         return self.value.startswith("cnh_")
 
     @property
+    def is_generic(self) -> bool:
+        """Verifica se é um documento genérico (OCR puro)."""
+        return self.value == "generic"
+
+    @property
+    def is_unknown(self) -> bool:
+        """Verifica se é um documento desconhecido."""
+        return self.value == "unknown"
+
+    @property
     def base_type(self) -> str:
-        """Retorna o tipo base (rg ou cnh)."""
-        return "rg" if self.is_rg else "cnh"
+        """Retorna o tipo base (rg, cnh, generic ou unknown)."""
+        if self.is_rg:
+            return "rg"
+        elif self.is_cnh:
+            return "cnh"
+        elif self.is_unknown:
+            return "unknown"
+        return "generic"
 
 
 class RGData(BaseModel):
     """Dados extraídos de um RG."""
+
+    model_config = ConfigDict(frozen=True)
 
     nome: str | None = Field(default=None, description="Nome completo")
     nome_pai: str | None = Field(default=None, description="Nome do pai")
@@ -62,6 +86,8 @@ class RGData(BaseModel):
 
 class CNHData(BaseModel):
     """Dados extraídos de uma CNH."""
+
+    model_config = ConfigDict(frozen=True)
 
     nome: str | None = Field(default=None, description="Nome completo")
     cpf: str | None = Field(default=None, description="CPF (###.###.###-##)")
@@ -105,6 +131,31 @@ class ExtractionResult(BaseModel):
     raw_text: str | None = Field(
         default=None, description="Texto bruto extraído (para debug)"
     )
+    backend: str = Field(description="Backend usado para extração")
+
+
+class GenericPageData(BaseModel):
+    """Dados de uma página extraída via OCR genérico."""
+
+    model_config = ConfigDict(frozen=True)
+
+    page: int = Field(ge=1, description="Número da página (1-indexed)")
+    text: str = Field(description="Texto extraído da página")
+
+
+class GenericExtractionResult(BaseModel):
+    """Resultado da extração genérica (OCR puro) de um documento."""
+
+    model_config = ConfigDict(frozen=True)
+
+    document_type: DocumentType = Field(
+        default=DocumentType.GENERIC, description="Tipo do documento"
+    )
+    raw_text: str = Field(description="Texto bruto extraído (todas as páginas)")
+    pages: list[GenericPageData] = Field(
+        default_factory=list, description="Texto por página (para PDFs multi-page)"
+    )
+    total_pages: int = Field(ge=1, description="Total de páginas processadas")
     backend: str = Field(description="Backend usado para extração")
 
 

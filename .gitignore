@@ -38,3 +38,4 @@ htmlcov/
 
 # Ruff
 .ruff_cache/
+pids/

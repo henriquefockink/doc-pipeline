@@ -1,21 +1,26 @@
 """
 Extractor usando GOT-OCR2 para OCR puro de documentos.
+
+Usa a versão integrada ao transformers (GOT-OCR-2.0-hf).
 """
 
-import json
 import re
 from pathlib import Path
 
+import structlog
 from PIL import Image
 
 from ..schemas import CNHData, RGData
 from .base import BaseExtractor
+
+logger = structlog.get_logger("got_ocr")
 
 
 class GOTOCRExtractor(BaseExtractor):
     """Extractor usando GOT-OCR-2.0 para OCR de documentos."""
 
     backend_name = "got-ocr"
+    supports_pdf = True
 
     def __init__(
         self,
@@ -36,91 +41,138 @@ class GOTOCRExtractor(BaseExtractor):
         self._processor = None
 
     def load_model(self) -> None:
-        """Carrega o modelo GOT-OCR."""
+        """Carrega o modelo GOT-OCR (versão integrada ao transformers)."""
         if self._model is not None:
             return
 
-        from transformers import AutoModel, AutoTokenizer
+        from transformers import AutoModelForImageTextToText, AutoProcessor
+
+        logger.info("loading_model", model=self.model_name)
+
+        self._processor = AutoProcessor.from_pretrained(self.model_name)
+
         import torch
-
-        print(f"Carregando modelo {self.model_name}...")
-
-        self._tokenizer = AutoTokenizer.from_pretrained(
+        self._model = AutoModelForImageTextToText.from_pretrained(
             self.model_name,
-            trust_remote_code=True,
-        )
-
-        self._model = AutoModel.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
             device_map=self.device,
             low_cpu_mem_usage=True,
+            torch_dtype=torch.float16,
         )
         self._model = self._model.eval()
 
-        print(f"Modelo {self.model_name} carregado em {self.device}")
+        logger.info("model_loaded", model=self.model_name, device=self.device)
 
     def unload_model(self) -> None:
         """Descarrega o modelo para liberar memória."""
         if self._model is not None:
             del self._model
-            del self._tokenizer
+            del self._processor
             self._model = None
-            self._tokenizer = None
+            self._processor = None
 
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def extract_text(self, image: str | Path | Image.Image) -> str:
-        """Extrai texto bruto da imagem usando OCR."""
+    def _run_ocr(self, image: Image.Image) -> str:
+        """Executa OCR em uma imagem PIL."""
+        return self._run_ocr_batch([image])[0]
+
+    def _run_ocr_batch(self, images: list[Image.Image]) -> list[str]:
+        """Executa OCR em batch de imagens PIL."""
+        import torch
+
         self.load_model()
 
-        # GOT-OCR espera path ou PIL Image
-        if isinstance(image, (str, Path)):
-            image_path = str(image)
-        else:
-            # Salva temporariamente se for PIL Image
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                image.save(f.name)
-                image_path = f.name
+        # Processa as imagens em batch
+        inputs = self._processor(images, return_tensors="pt").to(self.device)
 
-        # Usa modo "ocr" para extração de texto
-        result = self._model.chat(
-            self._tokenizer,
-            image_path,
-            ocr_type="ocr",
+        # Gera o texto com inference_mode para performance
+        with torch.inference_mode():
+            generate_ids = self._model.generate(
+                **inputs,
+                do_sample=False,
+                tokenizer=self._processor.tokenizer,
+                stop_strings="<|im_end|>",
+                max_new_tokens=1024,  # Reduzido - maioria das páginas não precisa mais
+                num_beams=1,
+                use_cache=True,
+                pad_token_id=self._processor.tokenizer.pad_token_id,
+            )
+
+        # Decodifica em batch
+        results = self._processor.batch_decode(
+            generate_ids[:, inputs["input_ids"].shape[1]:],
+            skip_special_tokens=True,
         )
 
-        return result
+        return [r.strip() if r else "" for r in results]
+
+    def extract_text(self, image: str | Path | Image.Image) -> str:
+        """Extrai texto bruto da imagem usando OCR."""
+        # Carrega a imagem se for um caminho
+        if isinstance(image, (str, Path)):
+            image = Image.open(image).convert("RGB")
+        elif isinstance(image, Image.Image):
+            image = image.convert("RGB")
+
+        return self._run_ocr(image)
 
     def _extract_with_format(self, image: str | Path | Image.Image) -> str:
         """Extrai texto com formatação markdown."""
+        # Para GOT-OCR-2.0-hf, o formato é controlado pelo prompt
+        # Por enquanto, retorna texto simples
+        return self.extract_text(image)
+
+    def extract_text_from_pdf(self, pdf_path: str | Path, batch_size: int = 4) -> list[str]:
+        """
+        Extrai texto de cada página de um PDF usando batch processing.
+
+        Args:
+            pdf_path: Caminho do arquivo PDF
+            batch_size: Número de páginas por batch (default: 4)
+
+        Returns:
+            Lista de textos, um por página
+        """
+        import fitz  # PyMuPDF
+
         self.load_model()
 
-        if isinstance(image, (str, Path)):
-            image_path = str(image)
-        else:
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                image.save(f.name)
-                image_path = f.name
+        pdf_path = Path(pdf_path)
+        if not pdf_path.exists():
+            raise FileNotFoundError(f"PDF não encontrado: {pdf_path}")
 
-        # Usa modo "format" para extração estruturada
-        result = self._model.chat(
-            self._tokenizer,
-            image_path,
-            ocr_type="format",
-        )
+        doc = fitz.open(pdf_path)
+        total_pages = len(doc)
 
-        return result
+        # Renderiza todas as páginas como imagens (100 DPI - rápido, qualidade OK)
+        dpi = 100
+        mat = fitz.Matrix(dpi / 72, dpi / 72)
+
+        images = []
+        try:
+            for page_num in range(total_pages):
+                page = doc[page_num]
+                pix = page.get_pixmap(matrix=mat)
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                images.append(img)
+        finally:
+            doc.close()
+
+        # Processa em batches
+        page_texts = []
+        for i in range(0, total_pages, batch_size):
+            batch = images[i:i + batch_size]
+            logger.debug("processing_batch", start=i + 1, end=min(i + batch_size, total_pages), total=total_pages)
+            texts = self._run_ocr_batch(batch)
+            page_texts.extend(texts)
+
+        return page_texts
 
     def _parse_rg_from_text(self, text: str) -> dict:
         """Parseia campos de RG do texto extraído."""
         data = {}
-        text_lower = text.lower()
         lines = text.split("\n")
 
         for i, line in enumerate(lines):
@@ -226,7 +278,7 @@ class GOTOCRExtractor(BaseExtractor):
 
     def extract_rg(self, image: str | Path | Image.Image) -> RGData:
         """Extrai dados de um RG usando OCR."""
-        text = self._extract_with_format(image)
+        text = self.extract_text(image)
         data = self._parse_rg_from_text(text)
 
         return RGData(
@@ -243,7 +295,7 @@ class GOTOCRExtractor(BaseExtractor):
 
     def extract_cnh(self, image: str | Path | Image.Image) -> CNHData:
         """Extrai dados de uma CNH usando OCR."""
-        text = self._extract_with_format(image)
+        text = self.extract_text(image)
         data = self._parse_cnh_from_text(text)
 
         return CNHData(

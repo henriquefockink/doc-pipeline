@@ -61,7 +61,7 @@ class Settings(BaseSettings):
     )
     extractor_model_got: str = Field(
         default="stepfun-ai/GOT-OCR-2.0-hf",
-        description="Modelo GOT-OCR a usar",
+        description="Modelo GOT-OCR a usar (versão integrada ao transformers)",
     )
 
     # API settings

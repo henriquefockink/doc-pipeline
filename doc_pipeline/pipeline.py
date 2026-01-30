@@ -5,16 +5,7 @@ Orquestrador principal do pipeline de documentos.
 from pathlib import Path
 from typing import Iterator
 
-import pillow_heif
 from PIL import Image
-
-# Registra suporte a HEIC/HEIF e AVIF
-pillow_heif.register_heif_opener()
-try:
-    pillow_heif.register_avif_opener()
-except AttributeError:
-    # AVIF support requires pillow-heif >= 0.10.0
-    pass
 
 from .classifier import ClassifierAdapter
 from .config import ExtractorBackend, Settings, get_settings
@@ -23,6 +14,7 @@ from .schemas import (
     ClassificationResult,
     DocumentType,
     ExtractionResult,
+    GenericExtractionResult,
     PipelineResult,
 )
 
@@ -151,6 +143,36 @@ class DocumentPipeline:
 
         return self.extractor.extract(image, document_type)
 
+    def extract_generic(
+        self,
+        image: str | Path | Image.Image,
+    ) -> GenericExtractionResult:
+        """
+        Extrai texto bruto de uma imagem (OCR puro).
+
+        Args:
+            image: Caminho da imagem ou PIL.Image
+
+        Returns:
+            GenericExtractionResult com texto extraído
+        """
+        return self.extractor.extract_generic(image)
+
+    def extract_generic_from_pdf(
+        self,
+        pdf_path: str | Path,
+    ) -> GenericExtractionResult:
+        """
+        Extrai texto bruto de um PDF (OCR puro, multi-page).
+
+        Args:
+            pdf_path: Caminho do arquivo PDF
+
+        Returns:
+            GenericExtractionResult com texto de todas as páginas
+        """
+        return self.extractor.extract_generic_from_pdf(pdf_path)
+
     def process(
         self,
         image: str | Path | Image.Image,
@@ -201,7 +223,7 @@ class DocumentPipeline:
             return PipelineResult(
                 file_path=file_path,
                 classification=ClassificationResult(
-                    document_type=DocumentType.RG_FRENTE,  # placeholder
+                    document_type=DocumentType.UNKNOWN,
                     confidence=0.0,
                 ),
                 extraction=None,

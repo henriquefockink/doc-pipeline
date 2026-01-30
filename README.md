@@ -5,12 +5,56 @@ Pipeline de classificação e extração de dados de documentos brasileiros (RG/
 ## Arquitetura
 
 ```
-[Imagem] → [Classificador EfficientNet] → [Tipo: RG/CNH]
-                                               ↓
-                                    [VLM: Qwen2.5-VL ou GOT-OCR2]
-                                               ↓
-                                    [Dados Estruturados JSON]
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              doc-pipeline                                    │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌──────────┐                                                               │
+│  │  Imagem  │──────────────────────────────────────────────────────────┐    │
+│  └──────────┘                                                          │    │
+│                                                                        ▼    │
+│  ┌──────────┐     ┌─────────────┐      ┌────────────────────────────────┐   │
+│  │   PDF    │────▶│  PyMuPDF    │─────▶│         GOT-OCR2               │   │
+│  └──────────┘     │ (converter) │      │   (OCR puro, ~2GB VRAM)        │   │
+│                   └─────────────┘      └────────────────────────────────┘   │
+│                         │                            │                       │
+│                         │                            ▼                       │
+│                         │              ┌────────────────────────────────┐   │
+│                         │              │   GenericExtractionResult      │   │
+│                         │              │   { raw_text, pages[] }        │   │
+│                         │              └────────────────────────────────┘   │
+│                         │                                                    │
+│  ════════════════════════════════════════════════════════════════════════   │
+│                                                                              │
+│  ┌──────────┐     ┌─────────────────┐      ┌────────────────────────────┐   │
+│  │  Imagem  │────▶│  Classificador  │─────▶│  Tipo: RG/CNH              │   │
+│  │ (RG/CNH) │     │  EfficientNet   │      │  + Confiança               │   │
+│  └──────────┘     └─────────────────┘      └────────────────────────────┘   │
+│                                                       │                      │
+│                                                       ▼                      │
+│                                            ┌────────────────────────────┐   │
+│                                            │  Qwen2.5-VL ou GOT-OCR2    │   │
+│                                            │  (extração estruturada)    │   │
+│                                            └────────────────────────────┘   │
+│                                                       │                      │
+│                                                       ▼                      │
+│                                            ┌────────────────────────────┐   │
+│                                            │  ExtractionResult          │   │
+│                                            │  { RGData | CNHData }      │   │
+│                                            └────────────────────────────┘   │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Fluxos
+
+| Entrada | Tipo | Backend | Saída |
+|---------|------|---------|-------|
+| Imagem (RG/CNH) | `rg_*`, `cnh_*` | Qwen-VL (default) | Dados estruturados (nome, cpf, etc) |
+| Imagem (qualquer) | `generic` | Qwen-VL | Texto bruto |
+| **PDF** | `generic` | **GOT-OCR** (automático) | Texto bruto por página |
+
+> **Nota:** PDFs são automaticamente convertidos para imagem via PyMuPDF (~50-100ms/página) e processados pelo GOT-OCR, que é mais leve (~2GB VRAM).
 
 > Para uma visão detalhada do fluxo de execução da API, consulte [docs/API_FLOW.md](docs/API_FLOW.md).
 
@@ -61,25 +105,35 @@ python api.py
 # A API estará disponível em http://localhost:8001
 ```
 
-### Expor via ngrok (acesso externo)
+### Gerenciar servidor
 
 ```bash
-# Iniciar API + ngrok (persiste após sair do SSH)
+# Iniciar API (background)
 ./start-server.sh
 
-# Com domínio customizado (ngrok pago)
-./start-server.sh start meu-dominio.ngrok.io
-# ou
-NGROK_DOMAIN=meu-dominio.ngrok.io ./start-server.sh
+# Iniciar em foreground (logs no terminal, Ctrl+C para parar)
+./start-server.sh start -f
+
+# Iniciar com ngrok (túnel externo)
+./start-server.sh start --ngrok                # URL aleatória
+./start-server.sh start meu-dominio.ngrok.io   # Domínio fixo (ngrok pago)
 
 # Ver status
 ./start-server.sh status
 
 # Parar tudo
+./start-server.sh stop
+# ou
 ./stop-server.sh
 ```
 
-O script usa `screen` para manter os processos rodando em background.
+**Opções do script:**
+
+| Flag | Descrição |
+|------|-----------|
+| `-f`, `--foreground` | Roda em foreground (logs no terminal) |
+| `--ngrok` | Habilita túnel ngrok (URL aleatória) |
+| `--ngrok=DOMINIO` | Habilita ngrok com domínio fixo |
 
 ## Uso
 
@@ -121,7 +175,8 @@ DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/outro/caminho/modelo.pth python api.py
 |--------|----------|-----------|:----:|
 | POST | `/process` | Pipeline completo (classificação + extração) | Sim |
 | POST | `/classify` | Apenas classificação | Sim |
-| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) | Sim |
+| POST | `/extract?doc_type=rg_frente` | Extração estruturada (tipo conhecido) | Sim |
+| POST | `/extract?doc_type=generic` | **OCR puro** (texto bruto) - suporta PDF | Sim |
 | GET | `/health` | Status da API | Não |
 | GET | `/classes` | Lista classes suportadas | Sim |
 
@@ -153,6 +208,16 @@ curl -X POST http://localhost:8001/classify \
 curl -X POST "http://localhost:8001/extract?doc_type=rg_frente" \
   -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
   -F "arquivo=@rg.jpg"
+
+# OCR genérico (texto bruto) - imagem
+curl -X POST "http://localhost:8001/extract?doc_type=generic" \
+  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+  -F "arquivo=@documento.jpg"
+
+# OCR genérico (texto bruto) - PDF multi-página
+curl -X POST "http://localhost:8001/extract?doc_type=generic" \
+  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+  -F "arquivo=@documento.pdf"
 
 # Health check (não requer auth)
 curl http://localhost:8001/health
@@ -191,6 +256,37 @@ extraction = pipeline.extract("rg.jpg", DocumentType.RG_FRENTE)
 |---------|--------|------|-----|
 | **qwen-vl** (default) | Qwen/Qwen2.5-VL-7B-Instruct | ~16GB | Extração contextualizada com prompts |
 | **got-ocr** | stepfun-ai/GOT-OCR-2.0-hf | ~2GB | OCR puro, suporta markdown |
+
+### OCR Genérico (doc_type=generic)
+
+Para extração de texto bruto sem estruturação, use `doc_type=generic`. Suporta imagens e **PDFs**.
+
+**Resposta para imagem:**
+```json
+{
+  "document_type": "generic",
+  "raw_text": "Texto extraído do documento...",
+  "pages": [{"page": 1, "text": "Texto..."}],
+  "total_pages": 1,
+  "backend": "qwen-vl"
+}
+```
+
+**Resposta para PDF (multi-página):**
+```json
+{
+  "document_type": "generic",
+  "raw_text": "Texto de todas as páginas concatenado...",
+  "pages": [
+    {"page": 1, "text": "Texto da página 1..."},
+    {"page": 2, "text": "Texto da página 2..."}
+  ],
+  "total_pages": 2,
+  "backend": "got-ocr"
+}
+```
+
+> **Nota:** PDFs são automaticamente processados pelo GOT-OCR (mais leve). A conversão PDF→imagem é feita via PyMuPDF (~50-100ms/página).
 
 ## Campos Extraídos
 
@@ -276,6 +372,7 @@ DOC_PIPELINE_WARMUP_ON_START=true  # Carrega modelos na inicialização
 - `rg_digital` - RG digital
 - `rg_frente` - RG frente
 - `rg_verso` - RG verso
+- `generic` - Documento genérico (OCR puro, sem extração estruturada)
 
 ## Estrutura do Projeto
 
@@ -304,6 +401,7 @@ doc-pipeline/
 - PyTorch 2.0+
 - transformers 4.49+
 - python-dotenv 1.0+
+- PyMuPDF 1.24+ (para suporte a PDF)
 - [doc-classifier](https://github.com/henriquefockink/doc-classifier) (dependência local)
 
 ### Opcionais

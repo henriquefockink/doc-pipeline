@@ -17,7 +17,7 @@ register_heif_opener()
 try:
     from pillow_heif import register_avif_opener
     register_avif_opener()
-except ImportError:
+except (ImportError, AttributeError):
     pass  # AVIF not available in this version
 
 from .pipeline import DocumentPipeline
@@ -27,6 +27,8 @@ from .schemas import (
     CNHData,
     ClassificationResult,
     ExtractionResult,
+    GenericExtractionResult,
+    GenericPageData,
     PipelineResult,
 )
 
@@ -37,5 +39,7 @@ __all__ = [
     "CNHData",
     "ClassificationResult",
     "ExtractionResult",
+    "GenericExtractionResult",
+    "GenericPageData",
     "PipelineResult",
 ]

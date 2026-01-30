@@ -6,7 +6,10 @@ import json
 import re
 from pathlib import Path
 
+import structlog
 from PIL import Image
+
+logger = structlog.get_logger("qwen_vl")
 
 from ..prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from ..schemas import CNHData, RGData
@@ -50,7 +53,7 @@ class QwenVLExtractor(BaseExtractor):
         from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
         import torch
 
-        print(f"Carregando modelo {self.model_name}...")
+        logger.info("loading_model", model=self.model_name)
 
         # Tenta usar flash_attention_2, senão usa sdpa (PyTorch nativo)
         try:
@@ -61,7 +64,7 @@ class QwenVLExtractor(BaseExtractor):
                 attn_implementation="flash_attention_2",
             )
         except Exception:
-            print("Flash Attention 2 não disponível, usando SDPA...")
+            logger.info("flash_attention_unavailable", fallback="sdpa")
             self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
@@ -75,7 +78,7 @@ class QwenVLExtractor(BaseExtractor):
             max_pixels=self.max_pixels,
         )
 
-        print(f"Modelo {self.model_name} carregado em {self.device}")
+        logger.info("model_loaded", model=self.model_name, device=self.device)
 
     def unload_model(self) -> None:
         """Descarrega o modelo para liberar memória."""

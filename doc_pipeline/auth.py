@@ -13,6 +13,35 @@ logger = get_logger("auth")
 
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
+# Connection pool singleton
+_pool: asyncpg.Pool | None = None
+
+
+async def _get_pool() -> asyncpg.Pool | None:
+    """Get or create the connection pool (lazy singleton)."""
+    global _pool
+    settings = get_settings()
+
+    if not settings.database_url:
+        return None
+
+    if _pool is None:
+        _pool = await asyncpg.create_pool(
+            settings.database_url,
+            min_size=1,
+            max_size=5,
+        )
+
+    return _pool
+
+
+async def close_pool() -> None:
+    """Close the connection pool (call on shutdown)."""
+    global _pool
+    if _pool is not None:
+        await _pool.close()
+        _pool = None
+
 
 @dataclass
 class AuthInfo:
@@ -35,12 +64,11 @@ class AuthInfo:
 
 async def _check_db_key(api_key: str, service: str = "ocr") -> dict | None:
     """Check if API key exists in PostgreSQL and has access to the service."""
-    settings = get_settings()
-    if not settings.database_url:
+    pool = await _get_pool()
+    if pool is None:
         return None
 
-    conn = await asyncpg.connect(settings.database_url)
-    try:
+    async with pool.acquire() as conn:
         row = await conn.fetchrow(
             """
             SELECT client_name, description, active, created_at, services
@@ -59,25 +87,20 @@ async def _check_db_key(api_key: str, service: str = "ocr") -> dict | None:
                 "services": list(row["services"]) if row["services"] else [],
             }
         return None
-    finally:
-        await conn.close()
 
 
 async def _has_any_db_keys(service: str = "ocr") -> bool:
     """Check if there are any API keys in PostgreSQL for the given service."""
-    settings = get_settings()
-    if not settings.database_url:
+    pool = await _get_pool()
+    if pool is None:
         return False
 
-    conn = await asyncpg.connect(settings.database_url)
-    try:
+    async with pool.acquire() as conn:
         result = await conn.fetchval(
             "SELECT EXISTS(SELECT 1 FROM api_keys WHERE active = TRUE AND $1 = ANY(services))",
             service,
         )
         return result
-    finally:
-        await conn.close()
 
 
 async def require_api_key(api_key: str | None = Security(api_key_header)) -> AuthInfo:

@@ -4,6 +4,8 @@ API REST para o pipeline de classificação e extração de documentos.
 """
 
 import io
+import os
+import tempfile
 import time
 from contextlib import asynccontextmanager
 from typing import Annotated
@@ -15,7 +17,8 @@ from PIL import Image
 from pydantic import BaseModel
 
 from doc_pipeline import DocumentPipeline, PipelineResult
-from doc_pipeline.auth import AuthInfo, require_api_key
+from doc_pipeline.extractors import GOTOCRExtractor
+from doc_pipeline.auth import AuthInfo, close_pool, require_api_key
 from doc_pipeline.config import get_settings
 from doc_pipeline.observability import (
     PrometheusMiddleware,
@@ -28,6 +31,7 @@ from doc_pipeline.schemas import (
     ClassificationResult,
     DocumentType,
     ExtractionResult,
+    GenericExtractionResult,
 )
 
 # Setup logging antes de tudo
@@ -41,6 +45,21 @@ logger = get_logger("api")
 
 # Global pipeline instance
 pipeline: DocumentPipeline | None = None
+
+# GOT-OCR extractor para PDFs (lazy-loaded)
+_got_ocr_extractor: GOTOCRExtractor | None = None
+
+
+def _get_got_ocr_extractor() -> GOTOCRExtractor:
+    """Retorna o extractor GOT-OCR para PDFs (lazy-loaded)."""
+    global _got_ocr_extractor
+    if _got_ocr_extractor is None:
+        settings = get_settings()
+        _got_ocr_extractor = GOTOCRExtractor(
+            model_name=settings.extractor_model_got,
+            device=settings.extractor_device,
+        )
+    return _got_ocr_extractor
 
 
 @asynccontextmanager
@@ -69,6 +88,12 @@ async def lifespan(app: FastAPI):
         pipeline.warmup(load_classifier=False, load_extractor=True)
         logger.info("warmup_complete", component="extractor")
 
+        # Warmup do GOT-OCR para PDFs (carrega em paralelo ao Qwen-VL)
+        logger.info("warmup_start", component="got-ocr")
+        got_extractor = _get_got_ocr_extractor()
+        got_extractor.load_model()
+        logger.info("warmup_complete", component="got-ocr")
+
     logger.info("startup_complete")
     yield
 
@@ -76,6 +101,9 @@ async def lifespan(app: FastAPI):
     logger.info("shutdown_start")
     if pipeline:
         pipeline.unload_extractor()
+    if _got_ocr_extractor:
+        _got_ocr_extractor.unload_model()
+    await close_pool()
     logger.info("shutdown_complete")
 
 
@@ -199,17 +227,32 @@ async def classify(
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/extract", response_model=ExtractionResult)
+def _is_pdf(contents: bytes, filename: str | None) -> bool:
+    """Detecta se o arquivo é um PDF pelo magic number ou extensão."""
+    # Magic number do PDF: %PDF
+    if contents[:4] == b"%PDF":
+        return True
+    # Fallback: extensão do arquivo
+    if filename and filename.lower().endswith(".pdf"):
+        return True
+    return False
+
+
+@app.post("/extract", response_model=ExtractionResult | GenericExtractionResult)
 async def extract(
     request: Request,
-    arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
-    doc_type: Annotated[str, Query(description="Tipo do documento (rg_frente, cnh_frente, etc)")],
+    arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
+    doc_type: Annotated[
+        str,
+        Query(description="Tipo do documento (rg_frente, cnh_frente, generic, etc)"),
+    ],
     auth: AuthInfo = Depends(require_api_key),
 ):
     """
-    Extrai dados de uma imagem de documento.
+    Extrai dados de uma imagem ou PDF de documento.
 
-    Requer que o tipo do documento seja especificado.
+    Para doc_type=generic, retorna apenas o texto bruto (OCR puro).
+    PDFs são suportados apenas para doc_type=generic.
     """
     if pipeline is None:
         raise HTTPException(status_code=503, detail="Pipeline não inicializado")
@@ -237,11 +280,49 @@ async def extract(
         )
 
     start_time = time.perf_counter()
+    contents = await arquivo.read()
+    is_pdf = _is_pdf(contents, arquivo.filename)
+
+    # PDF só é suportado para tipo generic
+    if is_pdf and not document_type.is_generic:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/extract",
+            status="400",
+        ).inc()
+        logger.warning(
+            "extract_pdf_not_generic",
+            doc_type=doc_type,
+            filename=arquivo.filename,
+            client=client,
+        )
+        raise HTTPException(
+            status_code=400,
+            detail="PDF só é suportado para doc_type=generic. "
+            "Para RG/CNH, envie uma imagem.",
+        )
 
     try:
-        contents = await arquivo.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-        result = pipeline.extract(image, document_type)
+        if document_type.is_generic:
+            # OCR puro - retorna texto bruto
+            if is_pdf:
+                # PDF: usa GOT-OCR automaticamente (suporta PDF nativo)
+                with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as f:
+                    f.write(contents)
+                    pdf_path = f.name
+
+                try:
+                    got_extractor = _get_got_ocr_extractor()
+                    result = got_extractor.extract_generic_from_pdf(pdf_path)
+                finally:
+                    os.unlink(pdf_path)
+            else:
+                image = Image.open(io.BytesIO(contents)).convert("RGB")
+                result = pipeline.extract_generic(image)
+        else:
+            # Extração estruturada (RG/CNH)
+            image = Image.open(io.BytesIO(contents)).convert("RGB")
+            result = pipeline.extract(image, document_type)
 
         # Métricas de negócio
         metrics.documents_processed.labels(
@@ -255,13 +336,18 @@ async def extract(
         ).inc()
 
         duration = time.perf_counter() - start_time
-        logger.info(
-            "extract_success",
-            document_type=document_type.value,
-            duration_ms=round(duration * 1000, 2),
-            filename=arquivo.filename,
-            client=client,
-        )
+        log_extra = {
+            "document_type": document_type.value,
+            "duration_ms": round(duration * 1000, 2),
+            "filename": arquivo.filename,
+            "client": client,
+            "is_pdf": is_pdf,
+            "backend": result.backend if hasattr(result, "backend") else "unknown",
+        }
+        if is_pdf and hasattr(result, "total_pages"):
+            log_extra["total_pages"] = result.total_pages
+
+        logger.info("extract_success", **log_extra)
 
         return result
 
@@ -278,6 +364,7 @@ async def extract(
             doc_type=doc_type,
             filename=arquivo.filename,
             client=client,
+            is_pdf=is_pdf,
         )
         raise HTTPException(status_code=400, detail=str(e))
 
