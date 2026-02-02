@@ -89,7 +89,7 @@ services:
       start_period: 180s
     restart: unless-stopped
 
-  # OCR Worker - uses PaddleOCR (CPU - fast enough without GPU, simpler setup)
+  # OCR Worker - uses EasyOCR with GPU for fast Portuguese OCR
   worker-ocr:
     build:
       context: .
@@ -103,12 +103,19 @@ services:
       - DOC_PIPELINE_LOG_LEVEL=INFO
       - DOC_PIPELINE_WORKER_OCR_HEALTH_PORT=9011
       - DOC_PIPELINE_OCR_LANGUAGE=pt
-      - DOC_PIPELINE_OCR_USE_GPU=false
+      - DOC_PIPELINE_OCR_USE_GPU=true
     volumes:
       # Shared temp directory for files
       - temp-images:/tmp/doc-pipeline
-      # PaddleOCR model cache
-      - paddle-cache:/root/.paddleocr
+      # EasyOCR model cache
+      - easyocr-cache:/root/.EasyOCR
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     depends_on:
       redis:
         condition: service_healthy
@@ -160,7 +167,7 @@ volumes:
   redis-data:
   temp-images:
   model-cache:
-  paddle-cache:
+  easyocr-cache:
   prometheus-data:
   grafana-data:
 
