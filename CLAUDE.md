@@ -57,7 +57,88 @@ doc_pipeline/
     └── cnh.py          # CNH extraction prompt template
 ```
 
-**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server)
+**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server), `worker.py` (queue worker)
+
+## Port Allocation
+
+doc-pipeline uses the **9000 port range** to avoid conflicts with other services:
+
+| Service | Port | Description |
+|---------|------|-------------|
+| API | 9000 | REST API (FastAPI) |
+| Worker Health | 9010 | Worker health check endpoint |
+| Redis | 6379 | Queue backend (internal) |
+
+## Docker Deployment
+
+```bash
+# Start all services (Redis + API + Worker)
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Scale workers (if needed)
+docker compose up -d --scale worker=2
+
+# Stop services
+docker compose down
+```
+
+Services:
+- **redis**: Queue backend
+- **api**: Stateless API that enqueues jobs (no GPU)
+- **worker**: Processes jobs from queue (GPU required)
+
+## GPU Sharing (MPS)
+
+This server runs multiple GPU services (doc-pipeline, ASR, TTS, etc.) on the same NVIDIA H200. To avoid GPU contention and ensure fair time-slicing, we use **NVIDIA MPS (Multi-Process Service)**.
+
+### Why MPS?
+
+| Mode | VRAM Access | Concurrency | Use Case |
+|------|-------------|-------------|----------|
+| Default | Shared | Serialized (unfair) | Single service |
+| **MPS** | **Shared (full)** | **Fair time-slicing** | **Multiple services** |
+| MIG | Partitioned (fixed) | Parallel (isolated) | Fixed workloads <40GB |
+
+MPS was chosen because:
+- Models can use **full VRAM** (some need >40GB, ruling out MIG)
+- **Fair scheduling** between services (ASR won't stall while OCR processes)
+- Works with **any CUDA application** without code changes
+
+### MPS Service
+
+MPS is configured as a systemd service that starts on boot:
+
+```bash
+# Check MPS status
+systemctl status nvidia-mps
+
+# Verify processes are using MPS (look for M+C type)
+nvidia-smi
+# Type "M+C" = MPS + Compute (correct)
+# Type "C" = Compute only (MPS not active)
+
+# Restart MPS (requires stopping all GPU processes first)
+sudo systemctl restart nvidia-mps
+```
+
+Service file: `/etc/systemd/system/nvidia-mps.service`
+
+### Scaling Workers
+
+With MPS, you can safely scale doc-pipeline workers:
+
+```bash
+# Scale to 2 workers (recommended for high load)
+docker compose up -d --scale worker=2
+
+# Check GPU memory before scaling more
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+```
+
+Each worker uses ~17GB VRAM. The H200 (143GB) can handle multiple workers plus ASR services.
 
 ## Key Patterns
 

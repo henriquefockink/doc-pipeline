@@ -1,0 +1,22 @@
+[Unit]
+Description=Doc Pipeline Worker Auto-Scaler
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=simple
+WorkingDirectory=/home/nebius/tools_2/tools/doc-pipeline
+ExecStart=/home/nebius/tools_2/tools/doc-pipeline/scripts/autoscale.sh --daemon
+Restart=always
+RestartSec=10
+
+# Configuração (ajuste conforme necessário)
+Environment="MIN_WORKERS=1"
+Environment="MAX_WORKERS=3"
+Environment="SCALE_UP_THRESHOLD=5"
+Environment="SCALE_DOWN_DELAY=120"
+Environment="CHECK_INTERVAL=10"
+Environment="REDIS_HOST=localhost"
+
+[Install]
+WantedBy=multi-user.target
