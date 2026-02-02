@@ -1,9 +1,8 @@
 # OCR Worker dependencies
-# Lighter than main worker - no transformers/torch (PaddleOCR uses PaddlePaddle)
+# Uses EasyOCR with PyTorch for better Portuguese/Latin support
 
-# PaddleOCR and dependencies (CPU version - PaddleOCR is fast enough without GPU)
-paddlepaddle>=2.6.0,<3.0  # CPU version (GPU version requires CUDA image)
-paddleocr>=2.7.0,<3.0  # Use 2.x API (3.x has breaking changes)
+# OCR engine
+easyocr>=1.7.0  # Good Portuguese support, uses PyTorch
 
 # PDF handling
 PyMuPDF>=1.24.0
@@ -17,6 +16,7 @@ aiohttp>=3.9.0
 redis>=5.0.0
 fastapi>=0.115.0
 starlette>=0.40.0
+httpx>=0.27.0
 
 # Config and logging
 pydantic>=2.0.0

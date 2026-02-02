@@ -1,58 +1,65 @@
-"""OCR Engine using PaddleOCR."""
+"""OCR Engine using EasyOCR."""
 
 import logging
 from pathlib import Path
 
+import easyocr
 import numpy as np
-from paddleocr import PaddleOCR
 from PIL import Image
 
 logger = logging.getLogger(__name__)
 
 
 class OCREngine:
-    """PaddleOCR wrapper for text extraction."""
+    """EasyOCR wrapper for text extraction with good Portuguese support."""
 
     def __init__(
         self,
         lang: str = "pt",
-        use_gpu: bool = True,
+        use_gpu: bool = False,
         gpu_id: int = 0,
-        use_angle_cls: bool = True,
         show_log: bool = False,
     ):
         """
         Initialize OCR Engine.
 
         Args:
-            lang: Language code (pt, en, ch, etc.)
+            lang: Language code (pt, en, etc.)
             use_gpu: Whether to use GPU
-            gpu_id: GPU device ID
-            use_angle_cls: Use angle classifier for rotated text
-            show_log: Show PaddleOCR logs
+            gpu_id: GPU device ID (not used by EasyOCR directly)
+            show_log: Show verbose logs
         """
         self.lang = lang
         self.use_gpu = use_gpu
         self.gpu_id = gpu_id
-        self.use_angle_cls = use_angle_cls
         self.show_log = show_log
-        self._ocr: PaddleOCR | None = None
+        self._reader: easyocr.Reader | None = None
 
     @property
-    def ocr(self) -> PaddleOCR:
-        """Lazy load PaddleOCR instance."""
-        if self._ocr is None:
-            logger.info(f"Loading PaddleOCR (lang={self.lang}, gpu={self.use_gpu})")
-            # PaddleOCR 2.x API
-            self._ocr = PaddleOCR(
-                lang=self.lang,
-                use_gpu=self.use_gpu,
-                gpu_mem=2000,  # Limit GPU memory to 2GB
-                use_angle_cls=self.use_angle_cls,
-                show_log=self.show_log,
+    def reader(self) -> easyocr.Reader:
+        """Lazy load EasyOCR reader."""
+        if self._reader is None:
+            # Map common language codes to EasyOCR format
+            lang_map = {
+                "pt": ["pt"],
+                "en": ["en"],
+                "latin": ["pt", "en"],  # Use both for latin
+                "es": ["es"],
+                "fr": ["fr"],
+                "de": ["de"],
+                "it": ["it"],
+            }
+
+            languages = lang_map.get(self.lang, [self.lang])
+
+            logger.info(f"Loading EasyOCR (languages={languages}, gpu={self.use_gpu})")
+            self._reader = easyocr.Reader(
+                languages,
+                gpu=self.use_gpu,
+                verbose=self.show_log,
             )
-            logger.info("PaddleOCR loaded")
-        return self._ocr
+            logger.info("EasyOCR loaded")
+        return self._reader
 
     def extract_text(
         self,
@@ -76,29 +83,25 @@ class OCREngine:
             img_array = str(image)
 
         # Run OCR
-        result = self.ocr.ocr(img_array, cls=self.use_angle_cls)
+        # EasyOCR returns list of (bbox, text, confidence)
+        result = self.reader.readtext(img_array)
 
-        if not result or not result[0]:
+        if not result:
             return "", 0.0
 
         # Extract text and confidence
         lines = []
         confidences = []
 
-        for line in result[0]:
-            if line and len(line) >= 2:
-                text = line[1][0]
-                confidence = line[1][1]
+        for detection in result:
+            if len(detection) >= 3:
+                text = detection[1]
+                confidence = detection[2]
                 lines.append(text)
                 confidences.append(confidence)
 
         # Join text
-        if preserve_layout:
-            # TODO: Use bounding boxes to preserve layout
-            text = "\n".join(lines)
-        else:
-            text = "\n".join(lines)
-
+        text = "\n".join(lines)
         avg_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
         return text, avg_confidence
@@ -121,17 +124,17 @@ class OCREngine:
         else:
             img_array = str(image)
 
-        result = self.ocr.ocr(img_array, cls=self.use_angle_cls)
+        result = self.reader.readtext(img_array)
 
-        if not result or not result[0]:
+        if not result:
             return []
 
         extractions = []
-        for line in result[0]:
-            if line and len(line) >= 2:
-                bbox = line[0]  # [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
-                text = line[1][0]
-                confidence = line[1][1]
+        for detection in result:
+            if len(detection) >= 3:
+                bbox = detection[0]  # [[x1,y1], [x2,y1], [x2,y2], [x1,y2]]
+                text = detection[1]
+                confidence = detection[2]
 
                 # Convert bbox to simple format
                 x_coords = [p[0] for p in bbox]
@@ -152,8 +155,8 @@ class OCREngine:
 
     def warmup(self):
         """Warmup the model by running a dummy inference."""
-        logger.info("Warming up PaddleOCR...")
+        logger.info("Warming up EasyOCR...")
         # Create a small dummy image
         dummy_img = Image.new("RGB", (100, 50), color="white")
         self.extract_text(dummy_img)
-        logger.info("PaddleOCR warmup complete")
+        logger.info("EasyOCR warmup complete")
