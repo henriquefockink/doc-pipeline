@@ -60,7 +60,11 @@ class OCRWorker:
     def pdf_converter(self) -> PDFConverter:
         """Lazy load PDF converter."""
         if self._pdf_converter is None:
-            self._pdf_converter = PDFConverter(dpi=200)
+            # 150 DPI - good balance between quality and speed
+            # 200 DPI = ~6s/page (alta qualidade, lento)
+            # 150 DPI = ~4s/page (boa qualidade, aceitável)
+            # 100 DPI = ~3s/page (qualidade ruim)
+            self._pdf_converter = PDFConverter(dpi=150)
         return self._pdf_converter
 
     def warmup(self):
@@ -185,13 +189,32 @@ class OCRWorker:
         max_pages: int,
     ) -> OCRResult:
         """Process PDF file."""
+        import time
+
         # Convert PDF to images
+        t0 = time.perf_counter()
         images = self.pdf_converter.convert(file_path, max_pages=max_pages)
+        convert_time = (time.perf_counter() - t0) * 1000
+        logger.info(
+            "pdf_converted",
+            request_id=request_id,
+            pages=len(images),
+            convert_time_ms=convert_time,
+        )
 
         # OCR each page
         pages = []
         for i, img in enumerate(images, start=1):
+            t0 = time.perf_counter()
             text, confidence = self.ocr_engine.extract_text(img)
+            ocr_time = (time.perf_counter() - t0) * 1000
+            logger.info(
+                "page_ocr_complete",
+                request_id=request_id,
+                page=i,
+                ocr_time_ms=ocr_time,
+                image_size=f"{img.width}x{img.height}",
+            )
             pages.append(OCRPageResult(
                 page=i,
                 text=text,
