@@ -4,9 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-doc-pipeline is a document classification and data extraction pipeline for Brazilian identity documents (RG and CNH). It uses a two-stage architecture:
-1. **Classification**: EfficientNet model classifies document type (8 classes)
-2. **Extraction**: VLM (Qwen2.5-VL or GOT-OCR) extracts structured data via prompts
+doc-pipeline é um pipeline de processamento de documentos brasileiros (RG e CNH) com duas funcionalidades principais:
+
+1. **Classificação + Extração** (Worker DocID)
+   - Classifica tipo do documento usando EfficientNet (8 classes)
+   - Extrai dados estruturados usando VLM (Qwen2.5-VL ou GOT-OCR)
+   - Use case: Processar documentos de identidade para obter dados como nome, CPF, data de nascimento
+
+2. **OCR Genérico** (Worker OCR)
+   - Extrai texto de qualquer PDF ou imagem usando EasyOCR
+   - Suporte a português com diacríticos (ç, ã, á, etc.)
+   - Use case: Extrair texto de contratos, faturas, documentos diversos
 
 ## Commands
 
@@ -57,7 +65,7 @@ doc_pipeline/
     └── cnh.py          # CNH extraction prompt template
 ```
 
-**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server), `worker.py` (classification worker), `worker_ocr.py` (OCR worker)
+**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server), `worker_docid.py` (classification worker), `worker_ocr.py` (OCR worker)
 
 ## API Endpoints
 
@@ -98,10 +106,89 @@ docker compose down
 ```
 
 Services:
-- **redis**: Queue backend
-- **api**: Stateless API that enqueues jobs (no GPU)
-- **worker**: Classification/extraction jobs (Qwen-VL, ~16GB VRAM)
-- **worker-ocr**: OCR jobs (PaddleOCR, ~2GB VRAM)
+- **redis**: Queue backend (filas separadas por worker)
+- **api**: Stateless API que enfileira jobs (sem GPU)
+- **worker-docid**: Worker de classificação/extração (RG/CNH)
+- **worker-ocr**: Worker de OCR genérico
+
+## Workers
+
+O sistema usa workers separados para diferentes tipos de processamento:
+
+### Worker DocID (`worker_docid.py`)
+
+Processa documentos de identidade (RG e CNH).
+
+| Característica | Valor |
+|----------------|-------|
+| Fila Redis | `queue:doc:documents` |
+| Porta métricas | 9010 |
+| Job Prometheus | `doc-pipeline-worker-docid` |
+| Modelos | EfficientNet (classifier) + Qwen2.5-VL (extractor) |
+| VRAM | ~16GB |
+| Tempo/job | ~3s |
+
+**Operações:**
+- `classify` - Classifica tipo do documento (8 classes: rg_frente, rg_verso, cnh_frente, etc.)
+- `extract` - Extrai dados estruturados (nome, CPF, data nascimento, etc.)
+- `process` - Classifica + extrai em uma única chamada
+
+**Exemplo de uso:**
+```bash
+curl -X POST http://localhost:9000/process \
+  -F "arquivo=@documento.jpg" \
+  -H "X-API-Key: $API_KEY"
+```
+
+### Worker OCR (`worker_ocr.py`)
+
+OCR genérico para qualquer PDF ou imagem.
+
+| Característica | Valor |
+|----------------|-------|
+| Fila Redis | `queue:doc:ocr` |
+| Porta métricas | 9011 |
+| Job Prometheus | `doc-pipeline-worker-ocr` |
+| Modelo | EasyOCR (português) |
+| VRAM | ~2GB |
+| Tempo/job | ~40ms (imagem simples), ~4s/página (PDF) |
+
+**Características:**
+- Suporte a PDF multi-página (converte para imagem a 150 DPI)
+- Bom reconhecimento de português (diacríticos: ç, ã, á, etc.)
+- GPU opcional (mais rápido com CUDA)
+
+**Exemplo de uso:**
+```bash
+curl -X POST http://localhost:9000/ocr \
+  -F "arquivo=@contrato.pdf" \
+  -F "max_pages=5" \
+  -H "X-API-Key: $API_KEY"
+```
+
+### Métricas dos Workers
+
+Ambos os workers expõem métricas Prometheus em `/metrics`:
+
+```yaml
+# Prometheus scrape config
+scrape_configs:
+  - job_name: 'doc-pipeline-worker'
+    static_configs:
+      - targets: ['worker:9010']
+    metrics_path: /metrics
+
+  - job_name: 'doc-pipeline-worker-ocr'
+    static_configs:
+      - targets: ['worker-ocr:9011']
+    metrics_path: /metrics
+```
+
+**Métricas principais:**
+- `doc_pipeline_jobs_processed_total{operation, status, delivery_mode}` - Jobs processados
+- `doc_pipeline_worker_processing_seconds{operation}` - Tempo de processamento
+- `doc_pipeline_queue_depth` - Profundidade da fila
+- `doc_pipeline_queue_wait_seconds` - Tempo de espera na fila
 
 ## GPU Sharing (MPS)
 
@@ -191,61 +278,125 @@ docker compose --profile monitoring up -d
 open http://localhost:3000  # admin:admin (ou GRAFANA_ADMIN_PASSWORD)
 ```
 
-### Estrutura
+### Grafana de Produção
+
+O Grafana de produção está em:
+- **URL**: https://speech-analytics-grafana-dev.paneas.com
+- **Credenciais**: Configuradas em `.env` (`GRAFANA_URL`, `GRAFANA_TOKEN`)
+
+### Estrutura de Pastas no Grafana
 
 ```
-grafana/provisioning/           # Provisioning automático
+📁 Doc Pipeline (uid: bfbjyfdf0uhhcf)           # Alertas gerais do pipeline
+   📁 Workers (uid: doc-pipeline-workers-nested)        # Dashboards específicos de workers
+   📁 Workers Alerts (uid: doc-pipeline-workers-alerts-nested)  # Alertas específicos de workers
+```
+
+Ao adicionar um novo worker, seguir este padrão:
+- Dashboard vai em `Doc Pipeline / Workers` (folderUid: `doc-pipeline-workers-nested`)
+- Alertas vão em `Doc Pipeline / Workers Alerts` (folderUid: `doc-pipeline-workers-alerts-nested`)
+
+### Estrutura de Arquivos
+
+```
+monitoring/
+├── grafana/
+│   ├── dashboards/             # JSONs de dashboards (backup/modelo)
+│   │   └── doc-pipeline.json   # Dashboard Overview
+│   └── alerts/                 # YAMLs de alertas (backup/modelo)
+│       └── doc-pipeline-alerts.yaml
+├── prometheus/
+│   └── prometheus.yml
+└── scripts/
+    ├── create-dashboards.sh    # Cria dashboards via API Grafana
+    └── create-alerts.sh        # Cria alertas via API Grafana
+
+grafana/provisioning/           # Provisioning automático (docker local)
 ├── dashboards/
 │   ├── overview/               # Dashboard geral
 │   │   └── doc-pipeline.json
 │   └── workers/                # Dashboards por worker
+│       ├── worker-docid.json
 │       └── worker-ocr.json
 ├── alerting/
 │   └── worker-ocr-alerts.yaml
 └── datasources/
     └── prometheus.yml
-
-monitoring/                     # Scripts e configs extras
-├── grafana/alerts/             # Alertas (formato YAML)
-├── prometheus/prometheus.yml
-└── scripts/
-    └── create-alerts.sh        # Cria alertas via API Grafana
 ```
 
-### Criar/Atualizar via API
+**Onde guardar novos arquivos:**
+- **Dashboards de workers**: `grafana/provisioning/dashboards/workers/worker-{nome}.json`
+- **Alertas de workers**: `monitoring/grafana/alerts/worker-{nome}-alerts.yaml`
+- **Dashboard overview**: `monitoring/grafana/dashboards/doc-pipeline.json`
 
-Os scripts criam dashboards e alertas via API do Grafana (útil para Grafana já rodando):
+### Criar/Atualizar Dashboards e Alertas via API
+
+**IMPORTANTE**: Sempre usar os scripts para criar dashboards e alertas no Grafana de produção!
 
 ```bash
-# Dashboards
+# Criar dashboards (usa .env para credenciais)
 ./monitoring/scripts/create-dashboards.sh
 
-# Alertas
+# Criar alertas (usa .env para credenciais)
 ./monitoring/scripts/create-alerts.sh
 
 # Com argumentos explícitos
 ./monitoring/scripts/create-dashboards.sh https://grafana.example.com glsa_xxx
+./monitoring/scripts/create-alerts.sh https://grafana.example.com glsa_xxx
 ```
 
-Variáveis de ambiente (ou .env):
-- `GRAFANA_URL` - URL do Grafana (default: http://localhost:3000)
-- `GRAFANA_TOKEN` - Token de API (glsa_xxx) ou user:password (default: admin:admin)
+Variáveis de ambiente (configuradas em `.env`):
+- `GRAFANA_URL` - URL do Grafana (produção: https://speech-analytics-grafana-dev.paneas.com)
+- `GRAFANA_TOKEN` - Token de API (glsa_xxx) ou user:password
+
+### Processo para Adicionar Novo Worker
+
+1. **Criar dashboard** em `monitoring/scripts/create-dashboards.sh`:
+   - Adicionar chamada `create_dashboard "Worker X" "worker-x" "$FOLDER_WORKERS" '{...}'`
+   - Painéis padrão: Queue Depth, Jobs/s, P95 Latency, Error Rate, Jobs (24h), Worker Status
+   - Seções: Overview, Processing Metrics, Queue, Delivery
+
+2. **Criar alertas** em `monitoring/scripts/create-alerts.sh`:
+   - Adicionar seção "Criando alertas do X Worker..."
+   - Alertas padrão: Worker Down, High Error Rate, High Latency, Queue Backup
+
+3. **Executar scripts** no Grafana de produção:
+   ```bash
+   ./monitoring/scripts/create-dashboards.sh
+   ./monitoring/scripts/create-alerts.sh
+   ```
+
+4. **Verificar** no Grafana:
+   - Dashboard: https://speech-analytics-grafana-dev.paneas.com/d/worker-x/worker-x
+   - Alertas: https://speech-analytics-grafana-dev.paneas.com/alerting/list
 
 ### Dashboards Disponíveis
 
-| Dashboard | Pasta | Descrição |
-|-----------|-------|-----------|
-| doc-pipeline | Doc Pipeline | Overview geral, auto-scaler, métricas de negócio |
-| worker-ocr | Doc Pipeline/Workers | Queue, processing time, delivery, errors |
+| Dashboard | Pasta | UID | Descrição |
+|-----------|-------|-----|-----------|
+| Doc Pipeline - Overview | Doc Pipeline | doc-pipeline-overview | Overview geral, auto-scaler, métricas de negócio |
+| Worker DocID | Doc Pipeline / Workers | worker-docid | Queue, processing time, confidence, document types |
+| Worker OCR | Doc Pipeline / Workers | worker-ocr | Queue, processing time, delivery, errors |
 
 ### Alertas Configurados
 
-**Worker OCR:**
-- `worker-ocr-down` - Worker unreachable > 2min
-- `worker-ocr-high-error-rate` - Error rate > 10%
-- `worker-ocr-high-latency` - P95 > 30s
-- `worker-ocr-queue-depth-high` - Queue > 10 jobs
-- `worker-ocr-webhook-failures` - Webhook failures elevated
+**Doc Pipeline (alertas gerais):**
+- High Error Rate (5xx), High Latency P95/P99, High Concurrency
+- Classification Confidence, Queue Depth, Worker Errors, Webhook Failures
+
+**Doc Pipeline / Workers Alerts:**
+
+| Alerta | Worker | Condição |
+|--------|--------|----------|
+| DocID Worker Down | docid | Worker unreachable > 2min |
+| DocID High Error Rate | docid | Error rate > 10% |
+| DocID High Latency | docid | P95 > 30s |
+| DocID Queue Backup | docid | Queue > 10 jobs |
+| DocID Low Confidence | docid | Median confidence < 70% |
+| OCR Worker Down | ocr | Worker unreachable > 2min |
+| OCR High Error Rate | ocr | Error rate > 10% |
+| OCR High Latency | ocr | P95 > 30s |
+| OCR Queue Backup | ocr | Queue > 10 jobs |
 
 ## Code Quality
 
@@ -253,6 +404,10 @@ Pre-commit hooks ensure consistent code style:
 - **Ruff**: Linter and formatter (replaces black, isort, flake8)
 - Run `pre-commit run --all-files` to check all files manually
 - Hooks run automatically on `git commit`
+
+## Git Commits
+
+**IMPORTANTE**: Ao criar commits, NÃO incluir `Co-Authored-By: Claude` ou qualquer menção ao Claude na mensagem de commit. Commits devem aparecer como se fossem feitos apenas pelo desenvolvedor.
 
 ## Documentation Lookup (Context7)
 
