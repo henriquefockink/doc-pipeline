@@ -176,6 +176,70 @@ Key settings (all prefixed with `DOC_PIPELINE_`):
 
 Extraction yields `RGData` or `CNHData` based on document type (defined in `schemas.py`).
 
+## Monitoring (Grafana + Prometheus)
+
+O stack de monitoramento é **opcional** (profile separado):
+
+```bash
+# Subir SEM monitoring (só API + workers)
+docker compose up -d
+
+# Subir COM monitoring (inclui Grafana + Prometheus)
+docker compose --profile monitoring up -d
+
+# Acessar Grafana
+open http://localhost:3000  # admin:admin (ou GRAFANA_ADMIN_PASSWORD)
+```
+
+### Estrutura
+
+```
+grafana/provisioning/           # Provisioning automático
+├── dashboards/
+│   ├── overview/               # Dashboard geral
+│   │   └── doc-pipeline.json
+│   └── workers/                # Dashboards por worker
+│       └── worker-ocr.json
+├── alerting/
+│   └── worker-ocr-alerts.yaml
+└── datasources/
+    └── prometheus.yml
+
+monitoring/                     # Scripts e configs extras
+├── grafana/alerts/             # Alertas (formato YAML)
+├── prometheus/prometheus.yml
+└── scripts/
+    └── create-alerts.sh        # Cria alertas via API Grafana
+```
+
+### Criar/Atualizar Alertas via API
+
+O script `create-alerts.sh` cria alertas via API do Grafana (útil para Grafana já rodando):
+
+```bash
+# Usa .env para GRAFANA_URL e GRAFANA_TOKEN
+./monitoring/scripts/create-alerts.sh
+
+# Ou passa argumentos
+./monitoring/scripts/create-alerts.sh https://grafana.example.com glsa_xxx
+```
+
+### Dashboards Disponíveis
+
+| Dashboard | Pasta | Descrição |
+|-----------|-------|-----------|
+| doc-pipeline | Doc Pipeline | Overview geral, auto-scaler, métricas de negócio |
+| worker-ocr | Doc Pipeline/Workers | Queue, processing time, delivery, errors |
+
+### Alertas Configurados
+
+**Worker OCR:**
+- `worker-ocr-down` - Worker unreachable > 2min
+- `worker-ocr-high-error-rate` - Error rate > 10%
+- `worker-ocr-high-latency` - P95 > 30s
+- `worker-ocr-queue-depth-high` - Queue > 10 jobs
+- `worker-ocr-webhook-failures` - Webhook failures elevated
+
 ## Code Quality
 
 Pre-commit hooks ensure consistent code style:
