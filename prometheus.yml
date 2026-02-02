@@ -15,6 +15,11 @@ scrape_configs:
       - targets: ['worker:9010']
     metrics_path: /metrics
 
+  - job_name: 'doc-pipeline-worker-ocr'
+    static_configs:
+      - targets: ['worker-ocr:9011']
+    metrics_path: /metrics
+
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']

@@ -128,3 +128,45 @@ class PipelineResult(BaseModel):
     def data(self) -> RGData | CNHData | None:
         """Atalho para os dados extraídos."""
         return self.extraction.data if self.extraction else None
+
+
+# OCR Results
+
+
+class OCRBoundingBox(BaseModel):
+    """Bounding box for detected text."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class OCRTextBlock(BaseModel):
+    """A single detected text block with position."""
+
+    text: str
+    confidence: float = Field(ge=0.0, le=1.0)
+    bbox: OCRBoundingBox | None = None
+
+
+class OCRPageResult(BaseModel):
+    """OCR result for a single page."""
+
+    page: int = Field(ge=1, description="Page number (1-indexed)")
+    text: str = Field(description="Extracted text from page")
+    confidence: float = Field(ge=0.0, le=1.0, description="Average confidence")
+    blocks: list[OCRTextBlock] | None = Field(
+        default=None, description="Individual text blocks with positions"
+    )
+
+
+class OCRResult(BaseModel):
+    """Complete OCR result for a document."""
+
+    request_id: str = Field(description="Unique request identifier")
+    total_pages: int = Field(ge=1, description="Total number of pages processed")
+    pages: list[OCRPageResult] = Field(description="OCR results per page")
+    processing_time_ms: float = Field(description="Total processing time in milliseconds")
+    file_type: str = Field(description="Detected file type (pdf, image)")
+    language: str | None = Field(default=None, description="Detected or specified language")

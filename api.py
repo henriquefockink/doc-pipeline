@@ -35,8 +35,10 @@ from doc_pipeline.schemas import (
     ClassificationResult,
     DocumentType,
     ExtractionResult,
+    OCRResult,
 )
 from doc_pipeline.shared import JobContext, QueueService, get_queue_service
+from doc_pipeline.shared.constants import QueueName
 from doc_pipeline.shared.queue import QueueFullError
 
 # Setup logging antes de tudo
@@ -136,6 +138,45 @@ async def save_temp_image(upload_file: UploadFile) -> str:
 
     # Generate unique filename
     ext = os.path.splitext(upload_file.filename or "image.jpg")[1] or ".jpg"
+    filename = f"{uuid.uuid4()}{ext}"
+
+    # Save to temp directory
+    temp_dir = tempfile.gettempdir()
+    temp_path = os.path.join(temp_dir, "doc-pipeline", filename)
+    os.makedirs(os.path.dirname(temp_path), exist_ok=True)
+
+    with open(temp_path, "wb") as f:
+        f.write(contents)
+
+    return temp_path
+
+
+async def save_temp_file(upload_file: UploadFile, allowed_extensions: set[str]) -> str:
+    """Save uploaded file (PDF or image) to temp location and return path."""
+    # Read file content
+    contents = await upload_file.read()
+
+    # Get extension
+    ext = os.path.splitext(upload_file.filename or "file")[1].lower() or ""
+
+    # Validate extension
+    if ext not in allowed_extensions:
+        raise ValueError(f"Invalid file type: {ext}. Allowed: {allowed_extensions}")
+
+    # Validate file based on type
+    if ext == ".pdf":
+        # Check PDF magic bytes
+        if not contents.startswith(b"%PDF"):
+            raise ValueError("Invalid PDF file")
+    else:
+        # Validate it's a valid image
+        try:
+            img = Image.open(io.BytesIO(contents))
+            img.verify()
+        except Exception as e:
+            raise ValueError(f"Invalid image file: {e}")
+
+    # Generate unique filename
     filename = f"{uuid.uuid4()}{ext}"
 
     # Save to temp directory
@@ -590,6 +631,129 @@ async def process(
         ).inc()
         logger.error(
             "process_error",
+            error=str(e),
+            error_type=type(e).__name__,
+            filename=arquivo.filename,
+            client=client,
+        )
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# OCR allowed file extensions
+OCR_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
+
+
+@app.post("/ocr")
+async def ocr(
+    request: Request,
+    arquivo: Annotated[UploadFile, File(description="PDF ou imagem para OCR")],
+    max_pages: Annotated[int, Query(ge=1, le=50, description="Máximo de páginas (PDF)")] = 10,
+    delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
+    webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
+    correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
+    auth: AuthInfo = Depends(require_api_key),
+):
+    """
+    Extrai texto de PDF ou imagem usando OCR (PaddleOCR).
+
+    Este endpoint aceita:
+    - PDFs (múltiplas páginas)
+    - Imagens (JPEG, PNG, TIFF, BMP, WebP)
+
+    Retorna o texto extraído de cada página.
+    """
+    if queue_service is None:
+        raise HTTPException(status_code=503, detail="Queue service not connected")
+
+    metrics = get_metrics()
+    client = auth.client_name or "unknown"
+
+    # Validate webhook mode
+    if delivery_mode == DeliveryMode.WEBHOOK and not webhook_url:
+        raise HTTPException(
+            status_code=400,
+            detail="webhook_url is required when delivery_mode=webhook",
+        )
+
+    try:
+        # Save file to temp location
+        file_path = await save_temp_file(arquivo, OCR_ALLOWED_EXTENSIONS)
+
+        # Create job for OCR queue
+        job = JobContext.create(
+            image_path=file_path,
+            operation="ocr",
+            client_name=auth.client_name,
+            api_key_prefix=auth.api_key_prefix,
+            delivery_mode=delivery_mode.value,
+            webhook_url=webhook_url,
+            correlation_id=correlation_id,
+            extra_params={"max_pages": max_pages},
+        )
+
+        # Enqueue to OCR queue (separate from main queue)
+        await queue_service.enqueue(job, queue_name=QueueName.OCR)
+
+        logger.info(
+            "ocr_enqueued",
+            request_id=job.request_id,
+            max_pages=max_pages,
+            delivery_mode=delivery_mode.value,
+            filename=arquivo.filename,
+            client=client,
+        )
+
+        if delivery_mode == DeliveryMode.WEBHOOK:
+            return JSONResponse(
+                status_code=202,
+                content=QueuedResponse(
+                    request_id=job.request_id,
+                    status="queued",
+                    message="OCR job queued. Result will be POSTed to webhook_url.",
+                    correlation_id=correlation_id,
+                ).model_dump(),
+            )
+
+        # Sync mode - wait for result
+        settings = get_settings()
+        try:
+            result = await wait_for_result(job.request_id, settings.sync_timeout_seconds)
+        except asyncio.TimeoutError:
+            raise HTTPException(
+                status_code=504,
+                detail=f"Timeout waiting for OCR result after {settings.sync_timeout_seconds}s",
+            )
+
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/ocr",
+            status="200",
+        ).inc()
+
+        return OCRResult(**result["result"])
+
+    except QueueFullError as e:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/ocr",
+            status="503",
+        ).inc()
+        raise HTTPException(status_code=503, detail=str(e))
+
+    except HTTPException:
+        raise
+
+    except Exception as e:
+        metrics.requests_by_client.labels(
+            client=client,
+            endpoint="/ocr",
+            status="400",
+        ).inc()
+        logger.error(
+            "ocr_error",
             error=str(e),
             error_type=type(e).__name__,
             filename=arquivo.filename,

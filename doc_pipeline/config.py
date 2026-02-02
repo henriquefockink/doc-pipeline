@@ -144,6 +144,24 @@ class Settings(BaseSettings):
         default=9010,
         description="Worker health check port",
     )
+    worker_ocr_health_port: int = Field(
+        default=9011,
+        description="OCR Worker health check port",
+    )
+
+    # OCR settings
+    ocr_language: str = Field(
+        default="pt",
+        description="OCR language (pt, en, ch, etc.)",
+    )
+    ocr_use_gpu: bool = Field(
+        default=True,
+        description="Use GPU for OCR (PaddleOCR)",
+    )
+    ocr_max_pages: int = Field(
+        default=10,
+        description="Maximum pages to process from PDF",
+    )
 
     @field_validator("classifier_model_path", mode="before")
     @classmethod

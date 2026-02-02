@@ -57,7 +57,18 @@ doc_pipeline/
     └── cnh.py          # CNH extraction prompt template
 ```
 
-**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server), `worker.py` (queue worker)
+**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server), `worker.py` (classification worker), `worker_ocr.py` (OCR worker)
+
+## API Endpoints
+
+| Endpoint | Method | Description | Worker |
+|----------|--------|-------------|--------|
+| `/classify` | POST | Classifica tipo do documento (RG/CNH) | worker |
+| `/extract` | POST | Extrai dados estruturados | worker |
+| `/process` | POST | Classifica + extrai (pipeline completo) | worker |
+| `/ocr` | POST | OCR genérico de PDF/imagem | worker-ocr |
+| `/health` | GET | Health check da API | - |
+| `/metrics` | GET | Métricas Prometheus | - |
 
 ## Port Allocation
 
@@ -66,19 +77,20 @@ doc-pipeline uses the **9000 port range** to avoid conflicts with other services
 | Service | Port | Description |
 |---------|------|-------------|
 | API | 9000 | REST API (FastAPI) |
-| Worker Health | 9010 | Worker health check endpoint |
+| Worker Health | 9010 | Classification worker health |
+| Worker OCR Health | 9011 | OCR worker health |
 | Redis | 6379 | Queue backend (internal) |
 
 ## Docker Deployment
 
 ```bash
-# Start all services (Redis + API + Worker)
+# Start all services (Redis + API + Workers)
 docker compose up -d
 
 # View logs
 docker compose logs -f
 
-# Scale workers (if needed)
+# Scale classification workers (if needed)
 docker compose up -d --scale worker=2
 
 # Stop services
@@ -88,7 +100,8 @@ docker compose down
 Services:
 - **redis**: Queue backend
 - **api**: Stateless API that enqueues jobs (no GPU)
-- **worker**: Processes jobs from queue (GPU required)
+- **worker**: Classification/extraction jobs (Qwen-VL, ~16GB VRAM)
+- **worker-ocr**: OCR jobs (PaddleOCR, ~2GB VRAM)
 
 ## GPU Sharing (MPS)
 
