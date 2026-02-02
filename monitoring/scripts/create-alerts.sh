@@ -223,4 +223,31 @@ create_alert "Webhook Failures" '[
 ]' "B" "5m" "warning" "Webhook deliveries failing" "Webhooks failing to deliver" '"component":"webhook"'
 
 echo ""
+echo "Criando alertas do OCR Worker..."
+
+# 16. OCR Worker Down
+create_alert "OCR Worker Down" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"up{job=\"doc-pipeline-worker-ocr\"}"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"lt","params":[1]}}]}}
+]' "B" "2m" "critical" "OCR Worker is down" "The OCR worker has been unreachable for more than 2 minutes" '"worker":"ocr"'
+
+# 17. OCR High Error Rate
+create_alert "OCR High Error Rate" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total{operation=\"ocr\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{operation=\"ocr\"}[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
+]' "B" "5m" "warning" "High OCR error rate" "OCR error rate above 10%" '"worker":"ocr"'
+
+# 18. OCR High Latency
+create_alert "OCR High Latency" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.95,rate(doc_pipeline_worker_processing_seconds_bucket{operation=\"ocr\"}[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[30]}}]}}
+]' "B" "5m" "warning" "OCR processing time is high" "P95 processing time above 30 seconds" '"worker":"ocr"'
+
+# 19. OCR Queue Backup
+create_alert "OCR Queue Backup" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[10]}}]}}
+]' "B" "5m" "warning" "OCR queue is backing up" "Queue depth above 10 jobs" '"worker":"ocr","component":"queue"'
+
+echo ""
 echo "Concluído! Verifique em: $GRAFANA_URL/alerting/list"

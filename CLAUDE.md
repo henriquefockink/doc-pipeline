@@ -212,17 +212,24 @@ monitoring/                     # Scripts e configs extras
     └── create-alerts.sh        # Cria alertas via API Grafana
 ```
 
-### Criar/Atualizar Alertas via API
+### Criar/Atualizar via API
 
-O script `create-alerts.sh` cria alertas via API do Grafana (útil para Grafana já rodando):
+Os scripts criam dashboards e alertas via API do Grafana (útil para Grafana já rodando):
 
 ```bash
-# Usa .env para GRAFANA_URL e GRAFANA_TOKEN
+# Dashboards
+./monitoring/scripts/create-dashboards.sh
+
+# Alertas
 ./monitoring/scripts/create-alerts.sh
 
-# Ou passa argumentos
-./monitoring/scripts/create-alerts.sh https://grafana.example.com glsa_xxx
+# Com argumentos explícitos
+./monitoring/scripts/create-dashboards.sh https://grafana.example.com glsa_xxx
 ```
+
+Variáveis de ambiente (ou .env):
+- `GRAFANA_URL` - URL do Grafana (default: http://localhost:3000)
+- `GRAFANA_TOKEN` - Token de API (glsa_xxx) ou user:password (default: admin:admin)
 
 ### Dashboards Disponíveis
 
