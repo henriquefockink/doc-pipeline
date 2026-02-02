@@ -78,6 +78,37 @@ class Metrics:
             "Memória GPU em uso",
         )
 
+        # Queue metrics
+        self.queue_depth = Gauge(
+            f"{namespace}_queue_depth",
+            "Jobs waiting in queue",
+        )
+
+        self.queue_wait_seconds = Histogram(
+            f"{namespace}_queue_wait_seconds",
+            "Time job waited in queue before processing",
+            buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0),
+        )
+
+        self.jobs_processed = Counter(
+            f"{namespace}_jobs_processed_total",
+            "Total jobs processed by worker",
+            ["operation", "status", "delivery_mode"],
+        )
+
+        self.webhook_deliveries = Counter(
+            f"{namespace}_webhook_deliveries_total",
+            "Webhook delivery attempts",
+            ["status"],
+        )
+
+        self.worker_processing_seconds = Histogram(
+            f"{namespace}_worker_processing_seconds",
+            "Time spent processing a job (excluding queue wait)",
+            ["operation"],
+            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+        )
+
 
 # Singleton global
 _metrics: Metrics | None = None
@@ -91,10 +122,23 @@ def get_metrics() -> Metrics:
     return _metrics
 
 
+AUTOSCALER_METRICS_FILE = "/tmp/doc_pipeline_autoscaler.prom"
+
+
 def metrics_endpoint() -> Response:
     """Endpoint /metrics para Prometheus scraping."""
+    content = generate_latest()
+
+    # Append autoscaler metrics if available
+    try:
+        with open(AUTOSCALER_METRICS_FILE) as f:
+            autoscaler_metrics = f.read()
+            content = content + b"\n" + autoscaler_metrics.encode()
+    except FileNotFoundError:
+        pass  # Autoscaler not running or no metrics yet
+
     return PlainTextResponse(
-        content=generate_latest(),
+        content=content,
         media_type=CONTENT_TYPE_LATEST,
     )
 
@@ -117,7 +161,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
     )
 
     # Endpoints da API que devem ser monitorados
-    API_ENDPOINTS = {"/classify", "/extract", "/process"}
+    API_ENDPOINTS = {"/classify", "/extract", "/process", "/jobs"}
 
     def __init__(
         self,
@@ -140,7 +184,13 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         # Se api_only=True, só coleta para endpoints conhecidos
         if self.api_only:
             normalized = path.rstrip("/") or "/"
-            return normalized in self.API_ENDPOINTS
+            # Check exact match or prefix match for parameterized routes
+            if normalized in self.API_ENDPOINTS:
+                return True
+            # Check for /jobs/{id}/status pattern
+            if normalized.startswith("/jobs/"):
+                return True
+            return False
 
         return True
 
@@ -207,4 +257,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
         """Normaliza path para evitar alta cardinalidade."""
         # Remove trailing slash
         path = path.rstrip("/") or "/"
+        # Normalize /jobs/{id}/status to /jobs
+        if path.startswith("/jobs/"):
+            return "/jobs"
         return path

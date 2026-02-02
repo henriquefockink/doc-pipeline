@@ -473,3 +473,152 @@ groups:
           severity: warning
           service: doc-pipeline
           slo: latency
+
+      # ============================================================
+      # QUEUE ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-queue-depth-high
+        title: High Queue Depth
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: doc_pipeline_queue_depth > 50
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Queue depth is high"
+          description: "{{ $values.A.Value }} jobs waiting in queue (threshold: 50). Worker may be overloaded."
+        labels:
+          severity: warning
+          service: doc-pipeline
+          component: queue
+
+      - uid: doc-pipeline-queue-depth-critical
+        title: Critical Queue Depth
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: doc_pipeline_queue_depth > 90
+        noDataState: OK
+        execErrState: Error
+        for: 2m
+        annotations:
+          summary: "Queue depth is critical"
+          description: "{{ $values.A.Value }} jobs waiting (threshold: 90). Queue is near capacity (100)."
+        labels:
+          severity: critical
+          service: doc-pipeline
+          component: queue
+
+      - uid: doc-pipeline-queue-wait-high
+        title: High Queue Wait Time
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                histogram_quantile(0.95,
+                  sum(rate(doc_pipeline_queue_wait_seconds_bucket[5m])) by (le)
+                ) > 60
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Jobs waiting too long in queue"
+          description: "P95 queue wait time is {{ $values.A.Value | printf \"%.1f\" }}s (threshold: 60s)"
+        labels:
+          severity: warning
+          service: doc-pipeline
+          component: queue
+
+      - uid: doc-pipeline-worker-not-processing
+        title: Worker Not Processing Jobs
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                (doc_pipeline_queue_depth > 0)
+                and
+                (sum(rate(doc_pipeline_jobs_processed_total[5m])) == 0)
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Worker is not processing jobs"
+          description: "Queue has jobs but no jobs are being processed. Worker may be down or stuck."
+        labels:
+          severity: critical
+          service: doc-pipeline
+          component: worker
+
+      - uid: doc-pipeline-worker-errors
+        title: Worker Processing Errors
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_jobs_processed_total{status="error"}[5m]))
+                / sum(rate(doc_pipeline_jobs_processed_total[5m])) > 0.1
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "High worker error rate"
+          description: "{{ $values.A.Value | printf \"%.1f\" }}% of jobs failing (threshold: 10%)"
+        labels:
+          severity: critical
+          service: doc-pipeline
+          component: worker
+
+      # ============================================================
+      # WEBHOOK ALERTS
+      # ============================================================
+
+      - uid: doc-pipeline-webhook-failures
+        title: Webhook Delivery Failures
+        condition: A
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: prometheus
+            model:
+              expr: |
+                sum(rate(doc_pipeline_webhook_deliveries_total{status="failed"}[5m])) > 0.1
+        noDataState: OK
+        execErrState: Error
+        for: 5m
+        annotations:
+          summary: "Webhook deliveries failing"
+          description: "Webhooks are failing to deliver. Check client endpoints."
+        labels:
+          severity: warning
+          service: doc-pipeline
+          component: webhook

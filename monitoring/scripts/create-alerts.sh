@@ -182,4 +182,45 @@ create_alert "/process Errors" '[
 ]' "B" "5m" "critical" "High error rate on /process" "Full pipeline error rate above 5%" '"endpoint":"process"'
 
 echo ""
+echo "Criando alertas de Queue & Worker..."
+
+# 10. High Queue Depth
+create_alert "High Queue Depth" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[50]}}]}}
+]' "B" "5m" "warning" "Queue depth is high" "Jobs waiting in queue above 50" '"component":"queue"'
+
+# 11. Critical Queue Depth
+create_alert "Critical Queue Depth" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[90]}}]}}
+]' "B" "2m" "critical" "Queue depth critical" "Queue near capacity (>90 jobs)" '"component":"queue"'
+
+# 12. High Queue Wait Time
+create_alert "High Queue Wait Time" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.95,sum(rate(doc_pipeline_queue_wait_seconds_bucket[5m])) by (le))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[60]}}]}}
+]' "B" "5m" "warning" "Jobs waiting too long" "P95 queue wait time above 60s" '"component":"queue"'
+
+# 13. Worker Not Processing
+create_alert "Worker Not Processing" '[
+    {"refId":"A","relativeTimeRange":{"from":600,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth"}},
+    {"refId":"B","relativeTimeRange":{"from":600,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total[5m]))"}},
+    {"refId":"C","datasourceUid":"__expr__","model":{"type":"math","expression":"$A > 0 && $B == 0"}},
+    {"refId":"D","datasourceUid":"__expr__","model":{"type":"threshold","expression":"C","conditions":[{"evaluator":{"type":"gt","params":[0]}}]}}
+]' "D" "5m" "critical" "Worker not processing jobs" "Queue has jobs but worker is not processing" '"component":"worker"'
+
+# 14. Worker Error Rate
+create_alert "Worker Error Rate" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total{status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
+]' "B" "5m" "critical" "High worker error rate" "More than 10% of jobs failing" '"component":"worker"'
+
+# 15. Webhook Failures
+create_alert "Webhook Failures" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_webhook_deliveries_total{status=\"failed\"}[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
+]' "B" "5m" "warning" "Webhook deliveries failing" "Webhooks failing to deliver" '"component":"webhook"'
+
+echo ""
 echo "Concluído! Verifique em: $GRAFANA_URL/alerting/list"

@@ -1,0 +1,139 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "9000:9000"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_API_PORT=9000
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      # Auth settings (optional)
+      - DOC_PIPELINE_API_KEY=${DOC_PIPELINE_API_KEY:-}
+      - DOC_PIPELINE_DATABASE_URL=${DOC_PIPELINE_DATABASE_URL:-}
+    volumes:
+      # Shared temp directory for images between API and worker
+      - temp-images:/tmp/doc-pipeline
+      # Autoscaler metrics (read-only)
+      - /tmp/doc_pipeline_autoscaler.prom:/tmp/doc_pipeline_autoscaler.prom:ro
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    # Port exposed internally for Prometheus scraping (no host binding for scaling)
+    expose:
+      - "9010"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_WARMUP_ON_START=true
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
+      # Model settings
+      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
+      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
+      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
+      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
+      # HuggingFace token for PyAnnote/private models
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      # Shared temp directory for images
+      - temp-images:/tmp/doc-pipeline
+      # Model cache
+      - model-cache:/root/.cache/huggingface
+      # Classifier model (mount from host)
+      - ./models:/app/models:ro
+      # doc-classifier package (if installed locally)
+      - ../doc-classifier:/app/doc-classifier:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    restart: unless-stopped
+
+  # Optional: Prometheus for monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    depends_on:
+      - api
+      - worker
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+  # Optional: Grafana for dashboards
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - prometheus
+    profiles:
+      - monitoring
+    restart: unless-stopped
+
+volumes:
+  redis-data:
+  temp-images:
+  model-cache:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  default:
+    name: doc-pipeline

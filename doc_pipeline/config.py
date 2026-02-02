@@ -105,6 +105,46 @@ class Settings(BaseSettings):
         description="Logs em formato JSON (True) ou colorido (False)",
     )
 
+    # Redis settings
+    redis_url: str = Field(
+        default="redis://localhost:6379/0",
+        description="Redis connection URL",
+    )
+    redis_max_connections: int = Field(
+        default=20,
+        description="Maximum Redis connections in pool",
+    )
+
+    # Queue settings
+    max_queue_size: int = Field(
+        default=100,
+        description="Maximum jobs allowed in queue",
+    )
+    queue_timeout_seconds: float = Field(
+        default=300.0,
+        description="Queue operation timeout (5 min)",
+    )
+    sync_timeout_seconds: float = Field(
+        default=300.0,
+        description="Sync mode wait timeout (5 min)",
+    )
+
+    # Webhook settings
+    webhook_timeout_seconds: float = Field(
+        default=20.0,
+        description="Webhook delivery timeout",
+    )
+    webhook_max_retries: int = Field(
+        default=3,
+        description="Maximum webhook delivery retries",
+    )
+
+    # Worker settings
+    worker_health_port: int = Field(
+        default=9010,
+        description="Worker health check port",
+    )
+
     @field_validator("classifier_model_path", mode="before")
     @classmethod
     def resolve_path(cls, v: str | Path) -> Path:
