@@ -161,7 +161,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
     )
 
     # Endpoints da API que devem ser monitorados
-    API_ENDPOINTS = {"/classify", "/extract", "/process", "/jobs"}
+    API_ENDPOINTS = {"/classify", "/extract", "/process", "/jobs", "/ocr"}
 
     def __init__(
         self,

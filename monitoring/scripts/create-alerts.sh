@@ -58,7 +58,7 @@ else
     echo "$DS_UID"
 fi
 
-# Cria folder se nao existe
+# Cria folder 'Doc Pipeline' se nao existe
 echo -n "Criando folder 'Doc Pipeline'... "
 FOLDER_RESPONSE=$(curl -s -X POST "$GRAFANA_URL/api/folders" \
     -H "$AUTH_HEADER" \
@@ -77,6 +77,20 @@ if [ -z "$FOLDER_UID" ]; then
     exit 1
 fi
 echo "$FOLDER_UID"
+
+# Cria folder aninhado 'Workers Alerts' dentro de 'Doc Pipeline'
+echo -n "Criando folder 'Workers Alerts' (aninhado)... "
+WORKERS_ALERTS_RESPONSE=$(curl -s -X POST "$GRAFANA_URL/api/folders" \
+    -H "$AUTH_HEADER" \
+    -H "Content-Type: application/json" \
+    -d '{"title": "Workers Alerts", "uid": "doc-pipeline-workers-alerts-nested", "parentUid": "'"$FOLDER_UID"'"}' 2>/dev/null || echo '{}')
+
+WORKERS_ALERTS_UID=$(echo "$WORKERS_ALERTS_RESPONSE" | grep -o '"uid":"[^"]*"' | head -1 | cut -d'"' -f4)
+if [ -z "$WORKERS_ALERTS_UID" ]; then
+    # Folder ja existe
+    WORKERS_ALERTS_UID="doc-pipeline-workers-alerts-nested"
+fi
+echo "$WORKERS_ALERTS_UID"
 
 # Funcao para criar alerta
 create_alert() {
@@ -221,6 +235,78 @@ create_alert "Webhook Failures" '[
     {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_webhook_deliveries_total{status=\"failed\"}[5m]))"}},
     {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
 ]' "B" "5m" "warning" "Webhook deliveries failing" "Webhooks failing to deliver" '"component":"webhook"'
+
+echo ""
+echo "Criando alertas de Workers..."
+
+# Usa folder aninhado para alertas de workers
+FOLDER_UID_BACKUP="$FOLDER_UID"
+FOLDER_UID="$WORKERS_ALERTS_UID"
+
+# ============================================================
+# DocID Worker Alerts
+# ============================================================
+
+# 16. DocID Worker Down
+create_alert "DocID Worker Down" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"up{job=\"doc-pipeline-worker-docid\"}"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"lt","params":[1]}}]}}
+]' "B" "2m" "critical" "DocID Worker is down" "The classification worker has been unreachable for more than 2 minutes" '"worker":"docid"'
+
+# 17. DocID High Error Rate
+create_alert "DocID High Error Rate" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-docid\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-docid\"}[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
+]' "B" "5m" "warning" "High classification worker error rate" "Classification worker error rate above 10%" '"worker":"docid"'
+
+# 18. DocID High Latency
+create_alert "DocID High Latency" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.95,sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-worker-docid\"}[5m])) by (le))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[30]}}]}}
+]' "B" "5m" "warning" "Classification processing time is high" "P95 processing time above 30 seconds" '"worker":"docid"'
+
+# 19. DocID Queue Backup
+create_alert "DocID Queue Backup" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth{job=\"doc-pipeline-worker-docid\"}"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[10]}}]}}
+]' "B" "5m" "warning" "Classification queue is backing up" "Queue depth above 10 jobs" '"worker":"docid","component":"queue"'
+
+# 20. DocID Low Confidence
+create_alert "DocID Low Confidence" '[
+    {"refId":"A","relativeTimeRange":{"from":600,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.5,sum(rate(doc_pipeline_classification_confidence_bucket[10m])) by (le))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"lt","params":[0.7]}}]}}
+]' "B" "10m" "warning" "Classification confidence is low" "Median classification confidence below 70%" '"worker":"docid"'
+
+# ============================================================
+# OCR Worker Alerts
+# ============================================================
+
+# 21. OCR Worker Down
+create_alert "OCR Worker Down" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"up{job=\"doc-pipeline-worker-ocr\"}"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"lt","params":[1]}}]}}
+]' "B" "2m" "critical" "OCR Worker is down" "The OCR worker has been unreachable for more than 2 minutes" '"worker":"ocr"'
+
+# 17. OCR High Error Rate
+create_alert "OCR High Error Rate" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total{operation=\"ocr\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{operation=\"ocr\"}[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
+]' "B" "5m" "warning" "High OCR error rate" "OCR error rate above 10%" '"worker":"ocr"'
+
+# 18. OCR High Latency
+create_alert "OCR High Latency" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.95,rate(doc_pipeline_worker_processing_seconds_bucket{operation=\"ocr\"}[5m]))"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[30]}}]}}
+]' "B" "5m" "warning" "OCR processing time is high" "P95 processing time above 30 seconds" '"worker":"ocr"'
+
+# 19. OCR Queue Backup
+create_alert "OCR Queue Backup" '[
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth"}},
+    {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[10]}}]}}
+]' "B" "5m" "warning" "OCR queue is backing up" "Queue depth above 10 jobs" '"worker":"ocr","component":"queue"'
+
+# Restaura folder principal para futuros alertas
+FOLDER_UID="$FOLDER_UID_BACKUP"
 
 echo ""
 echo "Concluído! Verifique em: $GRAFANA_URL/alerting/list"

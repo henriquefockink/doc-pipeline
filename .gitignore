@@ -38,3 +38,7 @@ htmlcov/
 
 # Ruff
 .ruff_cache/
+
+# Runtime files
+logs/
+pids/

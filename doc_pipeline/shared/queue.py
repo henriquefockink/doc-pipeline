@@ -23,10 +23,16 @@ logger = get_logger("queue")
 class QueueService:
     """Service for Redis queue operations."""
 
-    def __init__(self, redis_url: str | None = None):
-        """Initialize queue service."""
+    def __init__(self, redis_url: str | None = None, queue_name: str | None = None):
+        """Initialize queue service.
+
+        Args:
+            redis_url: Redis connection URL (default from settings)
+            queue_name: Queue name to use (default DOCUMENTS)
+        """
         settings = get_settings()
         self._redis_url = redis_url or settings.redis_url
+        self._queue_name = queue_name or QueueName.DOCUMENTS
         self._redis: redis.Redis | None = None
 
     async def connect(self) -> None:
@@ -54,25 +60,31 @@ class QueueService:
             raise RuntimeError("Queue service not connected. Call connect() first.")
         return self._redis
 
-    async def enqueue(self, job: JobContext) -> None:
+    async def enqueue(self, job: JobContext, queue_name: str | None = None) -> None:
         """
         Add a job to the processing queue.
 
         Uses LPUSH so workers can BRPOP (FIFO order).
+
+        Args:
+            job: JobContext to enqueue
+            queue_name: Override queue name (default uses instance queue)
         """
         settings = get_settings()
+        target_queue = queue_name or self._queue_name
 
         # Check queue size limit
-        queue_size = await self.get_queue_depth()
+        queue_size = await self.get_queue_depth(target_queue)
         if queue_size >= settings.max_queue_size:
             raise QueueFullError(f"Queue is full ({queue_size}/{settings.max_queue_size})")
 
-        await self.redis.lpush(QueueName.DOCUMENTS, job.to_json())
+        await self.redis.lpush(target_queue, job.to_json())
         logger.info(
             "job_enqueued",
             request_id=job.request_id,
             operation=job.operation,
             delivery_mode=job.delivery_mode,
+            queue=target_queue,
             queue_depth=queue_size + 1,
         )
 
@@ -83,13 +95,13 @@ class QueueService:
         Uses BRPOP with timeout for blocking pop (FIFO order).
         Returns None if timeout expires with no job.
         """
-        result = await self.redis.brpop(QueueName.DOCUMENTS, timeout=timeout)
+        result = await self.redis.brpop(self._queue_name, timeout=timeout)
         if result is None:
             return None
 
         _, job_json = result
         job = JobContext.from_json(job_json)
-        logger.debug("job_dequeued", request_id=job.request_id, operation=job.operation)
+        logger.debug("job_dequeued", request_id=job.request_id, operation=job.operation, queue=self._queue_name)
         return job
 
     async def move_to_dlq(self, job: JobContext, error: str) -> None:
@@ -102,9 +114,10 @@ class QueueService:
             error=error,
         )
 
-    async def get_queue_depth(self) -> int:
+    async def get_queue_depth(self, queue_name: str | None = None) -> int:
         """Get the number of jobs waiting in the queue."""
-        return await self.redis.llen(QueueName.DOCUMENTS)
+        target_queue = queue_name or self._queue_name
+        return await self.redis.llen(target_queue)
 
     async def get_dlq_depth(self) -> int:
         """Get the number of jobs in the dead letter queue."""

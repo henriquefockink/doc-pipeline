@@ -4,7 +4,8 @@
 class QueueName:
     """Redis queue names."""
 
-    DOCUMENTS = "queue:doc:documents"  # Main processing queue
+    DOCUMENTS = "queue:doc:documents"  # Main processing queue (classify/extract/process)
+    OCR = "queue:doc:ocr"  # OCR processing queue (separate worker)
     DLQ = "queue:doc:dlq"  # Dead letter queue for failed jobs
 
 

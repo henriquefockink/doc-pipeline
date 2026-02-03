@@ -1,5 +1,3 @@
-version: "3.8"
-
 services:
   redis:
     image: redis:7-alpine
@@ -44,34 +42,29 @@ services:
       retries: 3
     restart: unless-stopped
 
-  worker:
+  # Worker DocID 1 - sempre ativo (default)
+  worker-docid-1:
     build:
       context: .
-      dockerfile: Dockerfile.worker
-    # Port exposed internally for Prometheus scraping (no host binding for scaling)
-    expose:
-      - "9010"
+      dockerfile: Dockerfile.worker-docid
+    container_name: doc-pipeline-worker-docid-1
+    ports:
+      - "9010:9010"
     environment:
       - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
       - DOC_PIPELINE_WARMUP_ON_START=true
       - DOC_PIPELINE_LOG_JSON=true
       - DOC_PIPELINE_LOG_LEVEL=INFO
       - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
-      # Model settings
       - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
       - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
       - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
       - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
-      # HuggingFace token for PyAnnote/private models
       - HF_TOKEN=${HF_TOKEN:-}
     volumes:
-      # Shared temp directory for images
       - temp-images:/tmp/doc-pipeline
-      # Model cache
       - model-cache:/root/.cache/huggingface
-      # Classifier model (mount from host)
       - ./models:/app/models:ro
-      # doc-classifier package (if installed locally)
       - ../doc-classifier:/app/doc-classifier:ro
     deploy:
       resources:
@@ -91,6 +84,130 @@ services:
       start_period: 180s
     restart: unless-stopped
 
+  # Worker DocID 2 - inicia sob demanda pelo autoscaler
+  worker-docid-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker-docid
+    container_name: doc-pipeline-worker-docid-2
+    ports:
+      - "9012:9010"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_WARMUP_ON_START=true
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
+      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
+      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
+      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
+      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - temp-images:/tmp/doc-pipeline
+      - model-cache:/root/.cache/huggingface
+      - ./models:/app/models:ro
+      - ../doc-classifier:/app/doc-classifier:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    profiles:
+      - scale
+
+  # Worker DocID 3 - inicia sob demanda pelo autoscaler
+  worker-docid-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker-docid
+    container_name: doc-pipeline-worker-docid-3
+    ports:
+      - "9014:9010"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_WARMUP_ON_START=true
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
+      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
+      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
+      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
+      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - temp-images:/tmp/doc-pipeline
+      - model-cache:/root/.cache/huggingface
+      - ./models:/app/models:ro
+      - ../doc-classifier:/app/doc-classifier:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    profiles:
+      - scale
+
+  # OCR Worker - uses EasyOCR with GPU for fast Portuguese OCR
+  worker-ocr:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker-ocr
+    ports:
+      - "9011:9011"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_WARMUP_ON_START=true
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      - DOC_PIPELINE_WORKER_OCR_HEALTH_PORT=9011
+      - DOC_PIPELINE_OCR_LANGUAGE=pt
+      - DOC_PIPELINE_OCR_USE_GPU=true
+    volumes:
+      # Shared temp directory for files
+      - temp-images:/tmp/doc-pipeline
+      # EasyOCR model cache
+      - easyocr-cache:/root/.EasyOCR
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9011/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    restart: unless-stopped
+
   # Optional: Prometheus for monitoring
   prometheus:
     image: prom/prometheus:latest
@@ -105,7 +222,7 @@ services:
       - '--web.enable-lifecycle'
     depends_on:
       - api
-      - worker
+      - worker-docid
     profiles:
       - monitoring
     restart: unless-stopped
@@ -131,6 +248,7 @@ volumes:
   redis-data:
   temp-images:
   model-cache:
+  easyocr-cache:
   prometheus-data:
   grafana-data:
 

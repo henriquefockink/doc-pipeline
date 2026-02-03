@@ -40,6 +40,9 @@ class JobContext:
     started_at: str | None = None
     completed_at: str | None = None
 
+    # Extra parameters (operation-specific)
+    extra_params: dict[str, Any] | None = None
+
     # Result (populated by worker)
     result: dict[str, Any] | None = None
     error: str | None = None
@@ -58,6 +61,7 @@ class JobContext:
         delivery_mode: str = "sync",
         webhook_url: str | None = None,
         correlation_id: str | None = None,
+        extra_params: dict[str, Any] | None = None,
     ) -> JobContext:
         """Create a new JobContext with a generated request_id."""
         return cls(
@@ -72,6 +76,7 @@ class JobContext:
             delivery_mode=delivery_mode,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
+            extra_params=extra_params,
         )
 
     def mark_started(self) -> None:
@@ -99,6 +104,7 @@ class JobContext:
                 "delivery_mode": self.delivery_mode,
                 "webhook_url": self.webhook_url,
                 "correlation_id": self.correlation_id,
+                "extra_params": self.extra_params,
                 "enqueued_at": self.enqueued_at,
                 "started_at": self.started_at,
                 "completed_at": self.completed_at,
@@ -123,6 +129,7 @@ class JobContext:
             delivery_mode=d.get("delivery_mode", "sync"),
             webhook_url=d.get("webhook_url"),
             correlation_id=d.get("correlation_id"),
+            extra_params=d.get("extra_params"),
             enqueued_at=d.get("enqueued_at", ""),
             started_at=d.get("started_at"),
             completed_at=d.get("completed_at"),
@@ -138,6 +145,19 @@ class JobContext:
         enqueued = datetime.fromisoformat(self.enqueued_at)
         started = datetime.fromisoformat(self.started_at)
         return (started - enqueued).total_seconds()
+
+    @property
+    def queue_wait_ms(self) -> float:
+        """Calculate time spent waiting in queue in milliseconds."""
+        if not self.enqueued_at:
+            return 0.0
+        enqueued = datetime.fromisoformat(self.enqueued_at)
+        # If started, use started time, otherwise use now
+        if self.started_at:
+            end = datetime.fromisoformat(self.started_at)
+        else:
+            end = datetime.now(timezone.utc)
+        return (end - enqueued).total_seconds() * 1000
 
     @property
     def processing_time_seconds(self) -> float | None:

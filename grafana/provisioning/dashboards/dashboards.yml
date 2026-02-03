@@ -1,0 +1,22 @@
+apiVersion: 1
+
+providers:
+  - name: 'Doc Pipeline - Overview'
+    orgId: 1
+    folder: 'Doc Pipeline'
+    folderUid: 'doc-pipeline'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/overview
+
+  - name: 'Doc Pipeline - Workers'
+    orgId: 1
+    folder: 'Doc Pipeline/Workers'
+    folderUid: 'doc-pipeline-workers'
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/workers
