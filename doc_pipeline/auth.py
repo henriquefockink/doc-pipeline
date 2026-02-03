@@ -119,7 +119,12 @@ async def require_api_key(api_key: str | None = Security(api_key_header)) -> Aut
         logger.debug("auth_success", client=key_data["client_name"])
         return AuthInfo.from_key(api_key, client_name=key_data["client_name"])
 
-    logger.warning("auth_invalid_key", key_prefix=api_key[:8] if len(api_key) >= 8 else api_key)
+    logger.warning(
+        "auth_invalid_key",
+        key_prefix=api_key[:8] if len(api_key) >= 8 else api_key,
+        key_length=len(api_key),
+        key_suffix=api_key[-4:] if len(api_key) >= 4 else api_key,
+    )
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail=f"Invalid API key or no access to '{service}' service.",

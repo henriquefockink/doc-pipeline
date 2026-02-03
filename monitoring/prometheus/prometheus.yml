@@ -16,12 +16,36 @@ rule_files:
 
 scrape_configs:
   # Doc Pipeline API
-  - job_name: 'doc-pipeline'
+  - job_name: 'doc-pipeline-api'
     static_configs:
-      - targets: ['doc-pipeline-api:8000']
+      - targets: ['api:9000']
         labels:
           service: 'doc-pipeline'
-          env: 'production'
+          component: 'api'
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # Doc Pipeline Worker DocID (Classification/Extraction)
+  - job_name: 'doc-pipeline-worker-docid'
+    static_configs:
+      - targets: ['worker-docid:9010']
+        labels:
+          service: 'doc-pipeline'
+          component: 'worker'
+          worker: 'docid'
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # Doc Pipeline Worker OCR
+  - job_name: 'doc-pipeline-worker-ocr'
+    static_configs:
+      - targets: ['worker-ocr:9011']
+        labels:
+          service: 'doc-pipeline'
+          component: 'worker'
+          worker: 'ocr'
     metrics_path: /metrics
     scrape_interval: 15s
     scrape_timeout: 10s

@@ -10,4 +10,4 @@ if [ -d "/app/doc-classifier" ]; then
 fi
 
 # Run the worker
-exec python worker.py
+exec python worker_docid.py

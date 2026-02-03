@@ -273,7 +273,7 @@ async def health_server(worker: OCRWorker):
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
         return web.Response(
             body=generate_latest(),
-            content_type=CONTENT_TYPE_LATEST,
+            headers={"Content-Type": CONTENT_TYPE_LATEST},
         )
 
     app = web.Application()

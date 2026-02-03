@@ -182,6 +182,29 @@ class DocumentWorker:
                 delivery_mode=job.delivery_mode,
             ).inc()
 
+            # Record business metrics (document type and confidence)
+            if job.operation == "classify":
+                doc_type = result.document_type.value
+                self.metrics.documents_processed.labels(
+                    document_type=doc_type, operation=job.operation
+                ).inc()
+                self.metrics.classification_confidence.labels(
+                    document_type=doc_type
+                ).observe(result.confidence)
+            elif job.operation == "process":
+                doc_type = result.classification.document_type.value
+                self.metrics.documents_processed.labels(
+                    document_type=doc_type, operation=job.operation
+                ).inc()
+                self.metrics.classification_confidence.labels(
+                    document_type=doc_type
+                ).observe(result.classification.confidence)
+            elif job.operation == "extract":
+                doc_type = result.document_type.value
+                self.metrics.documents_processed.labels(
+                    document_type=doc_type, operation=job.operation
+                ).inc()
+
             logger.info(
                 "job_processing_complete",
                 request_id=job.request_id,
@@ -310,7 +333,7 @@ def main():
     )
 
     uvicorn.run(
-        "worker:app",
+        "worker_docid:app",
         host="0.0.0.0",
         port=settings.worker_health_port,
         reload=False,
