@@ -7,7 +7,7 @@ Pipeline de classificação e extração de dados de documentos brasileiros (RG/
 ```
 [Imagem] → [Classificador EfficientNet] → [Tipo: RG/CNH]
                                                ↓
-                                    [VLM: Qwen2.5-VL ou GOT-OCR2]
+                                    [VLM: Qwen2.5-VL ou EasyOCR]
                                                ↓
                                     [Dados Estruturados JSON]
 ```
@@ -89,8 +89,8 @@ O script usa `screen` para manter os processos rodando em background.
 # Pipeline completo (classificação + extração)
 python cli.py documento.jpg
 
-# Usar GOT-OCR2 ao invés de Qwen (menor uso de VRAM)
-python cli.py documento.jpg --backend got-ocr
+# Usar EasyOCR ao invés de Qwen (menor uso de VRAM)
+python cli.py documento.jpg --backend easy-ocr
 
 # Apenas classificar
 python cli.py documento.jpg --no-extraction
@@ -108,8 +108,8 @@ python cli.py documento.jpg --classifier-device cuda:0 --extractor-device cuda:1
 # Iniciar servidor (usa models/classifier.pth por padrão)
 python api.py
 
-# Com GOT-OCR (menor VRAM)
-DOC_PIPELINE_EXTRACTOR_BACKEND=got-ocr python api.py
+# Com EasyOCR (menor VRAM)
+DOC_PIPELINE_EXTRACTOR_BACKEND=easy-ocr python api.py
 
 # Com modelo em outro caminho
 DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/outro/caminho/modelo.pth python api.py
@@ -166,7 +166,7 @@ from doc_pipeline import DocumentPipeline
 # Inicializa pipeline
 pipeline = DocumentPipeline(
     classifier_model_path="models/classifier.pth",
-    extractor_backend="qwen-vl",  # ou "got-ocr"
+    extractor_backend="qwen-vl",  # ou "easy-ocr"
 )
 
 # Pipeline completo
@@ -185,12 +185,12 @@ from doc_pipeline.schemas import DocumentType
 extraction = pipeline.extract("rg.jpg", DocumentType.RG_FRENTE)
 ```
 
-## Backends VLM
+## Backends de Extração
 
 | Backend | Modelo | VRAM | Uso |
 |---------|--------|------|-----|
 | **qwen-vl** (default) | Qwen/Qwen2.5-VL-7B-Instruct | ~16GB | Extração contextualizada com prompts |
-| **got-ocr** | stepfun-ai/GOT-OCR-2.0-hf | ~2GB | OCR puro, suporta markdown |
+| **easy-ocr** | EasyOCR | ~2GB | OCR + parsing com regex |
 
 ## Campos Extraídos
 
@@ -243,10 +243,9 @@ DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
 DOC_PIPELINE_CLASSIFIER_FP8=false
 
 # Extractor
-DOC_PIPELINE_EXTRACTOR_BACKEND=qwen-vl  # ou got-ocr
+DOC_PIPELINE_EXTRACTOR_BACKEND=qwen-vl  # ou easy-ocr
 DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
 DOC_PIPELINE_EXTRACTOR_MODEL_QWEN=Qwen/Qwen2.5-VL-7B-Instruct
-DOC_PIPELINE_EXTRACTOR_MODEL_GOT=stepfun-ai/GOT-OCR-2.0-hf
 
 # API
 DOC_PIPELINE_API_HOST=0.0.0.0
@@ -262,7 +261,7 @@ DOC_PIPELINE_WARMUP_ON_START=true  # Carrega modelos na inicialização
 
 | Configuração | GPU | VRAM |
 |--------------|-----|------|
-| Classifier + GOT-OCR | 1x | 8GB+ |
+| Classifier + EasyOCR | 1x | 8GB+ |
 | Classifier + Qwen-VL | 1x | 24GB+ |
 | Multi-GPU | 2x | 8GB + 16GB |
 
@@ -292,7 +291,7 @@ doc-pipeline/
 │   ├── config.py          # Configurações (pydantic-settings)
 │   ├── schemas.py         # Modelos Pydantic (RGData, CNHData, etc.)
 │   ├── classifier/        # Adapter para doc-classifier
-│   ├── extractors/        # Backends VLM (Qwen, GOT-OCR)
+│   ├── extractors/        # Backends de extração (Qwen-VL, EasyOCR)
 │   └── prompts/           # Templates de extração
 └── docs/
     └── API_FLOW.md        # Documentação detalhada do fluxo

@@ -1,126 +1,75 @@
 """
-Extractor usando GOT-OCR2 para OCR puro de documentos.
+Extractor usando EasyOCR para OCR puro de documentos.
+
+Alternativa leve ao Qwen-VL que usa OCR + parsing com regex.
+Usa ~2GB VRAM vs ~16GB do Qwen-VL.
 """
 
-import json
 import re
 from pathlib import Path
 
 from PIL import Image
 
+from ..ocr import OCREngine
 from ..schemas import CNHData, RGData
 from .base import BaseExtractor
 
 
-class GOTOCRExtractor(BaseExtractor):
-    """Extractor usando GOT-OCR-2.0 para OCR de documentos."""
+class EasyOCRExtractor(BaseExtractor):
+    """Extractor usando EasyOCR para OCR de documentos."""
 
-    backend_name = "got-ocr"
+    backend_name = "easy-ocr"
 
     def __init__(
         self,
-        model_name: str = "stepfun-ai/GOT-OCR-2.0-hf",
+        lang: str = "pt",
+        use_gpu: bool = True,
         device: str = "cuda:0",
     ):
         """
-        Inicializa o extractor GOT-OCR.
+        Inicializa o extractor EasyOCR.
 
         Args:
-            model_name: Nome do modelo no HuggingFace
-            device: Device para inferência
+            lang: Idioma para OCR (pt, en, etc.)
+            use_gpu: Usar GPU para inferência
+            device: Device para inferência (não usado diretamente pelo EasyOCR)
         """
-        self.model_name = model_name
+        self.lang = lang
+        self.use_gpu = use_gpu
         self.device = device
+        self._engine: OCREngine | None = None
 
-        self._model = None
-        self._processor = None
+    @property
+    def engine(self) -> OCREngine:
+        """Lazy load OCR engine."""
+        if self._engine is None:
+            self._engine = OCREngine(
+                lang=self.lang,
+                use_gpu=self.use_gpu,
+                show_log=False,
+            )
+        return self._engine
 
     def load_model(self) -> None:
-        """Carrega o modelo GOT-OCR."""
-        if self._model is not None:
-            return
-
-        from transformers import AutoModel, AutoTokenizer
-        import torch
-
-        print(f"Carregando modelo {self.model_name}...")
-
-        self._tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-        )
-
-        self._model = AutoModel.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            torch_dtype=torch.bfloat16,
-            device_map=self.device,
-            low_cpu_mem_usage=True,
-        )
-        self._model = self._model.eval()
-
-        print(f"Modelo {self.model_name} carregado em {self.device}")
+        """Carrega o modelo EasyOCR."""
+        # Força carregamento do reader
+        _ = self.engine.reader
 
     def unload_model(self) -> None:
         """Descarrega o modelo para liberar memória."""
-        if self._model is not None:
-            del self._model
-            del self._tokenizer
-            self._model = None
-            self._tokenizer = None
-
-            import torch
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
+        if self._engine is not None:
+            self._engine._reader = None
+            self._engine = None
 
     def extract_text(self, image: str | Path | Image.Image) -> str:
         """Extrai texto bruto da imagem usando OCR."""
-        self.load_model()
-
-        # GOT-OCR espera path ou PIL Image
-        if isinstance(image, (str, Path)):
-            image_path = str(image)
-        else:
-            # Salva temporariamente se for PIL Image
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                image.save(f.name)
-                image_path = f.name
-
-        # Usa modo "ocr" para extração de texto
-        result = self._model.chat(
-            self._tokenizer,
-            image_path,
-            ocr_type="ocr",
-        )
-
-        return result
-
-    def _extract_with_format(self, image: str | Path | Image.Image) -> str:
-        """Extrai texto com formatação markdown."""
-        self.load_model()
-
-        if isinstance(image, (str, Path)):
-            image_path = str(image)
-        else:
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as f:
-                image.save(f.name)
-                image_path = f.name
-
-        # Usa modo "format" para extração estruturada
-        result = self._model.chat(
-            self._tokenizer,
-            image_path,
-            ocr_type="format",
-        )
-
-        return result
+        img = self._load_image(image)
+        text, _ = self.engine.extract_text(img)
+        return text
 
     def _parse_rg_from_text(self, text: str) -> dict:
         """Parseia campos de RG do texto extraído."""
         data = {}
-        text_lower = text.lower()
         lines = text.split("\n")
 
         for i, line in enumerate(lines):
@@ -226,7 +175,7 @@ class GOTOCRExtractor(BaseExtractor):
 
     def extract_rg(self, image: str | Path | Image.Image) -> RGData:
         """Extrai dados de um RG usando OCR."""
-        text = self._extract_with_format(image)
+        text = self.extract_text(image)
         data = self._parse_rg_from_text(text)
 
         return RGData(
@@ -243,7 +192,7 @@ class GOTOCRExtractor(BaseExtractor):
 
     def extract_cnh(self, image: str | Path | Image.Image) -> CNHData:
         """Extrai dados de uma CNH usando OCR."""
-        text = self._extract_with_format(image)
+        text = self.extract_text(image)
         data = self._parse_cnh_from_text(text)
 
         return CNHData(

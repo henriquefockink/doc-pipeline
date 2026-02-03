@@ -14,7 +14,7 @@ class ExtractorBackend(str, Enum):
     """Backends disponíveis para extração de dados."""
 
     QWEN_VL = "qwen-vl"
-    GOT_OCR = "got-ocr"
+    EASY_OCR = "easy-ocr"
 
 
 class Settings(BaseSettings):
@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     # Extractor settings
     extractor_backend: ExtractorBackend = Field(
         default=ExtractorBackend.QWEN_VL,
-        description="Backend para extração (qwen-vl ou got-ocr)",
+        description="Backend para extração (qwen-vl ou easy-ocr)",
     )
     extractor_device: str = Field(
         default="cuda:0",
@@ -58,10 +58,6 @@ class Settings(BaseSettings):
     extractor_model_qwen: str = Field(
         default="Qwen/Qwen2.5-VL-7B-Instruct",
         description="Modelo Qwen-VL a usar",
-    )
-    extractor_model_got: str = Field(
-        default="stepfun-ai/GOT-OCR-2.0-hf",
-        description="Modelo GOT-OCR a usar",
     )
 
     # API settings

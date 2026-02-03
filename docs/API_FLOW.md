@@ -71,8 +71,8 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 │ ClassifierAdapter.classify()      │   │ @property extractor:              │
 │                                   │   │ if backend == QWEN_VL:            │
 │ • EfficientNet-B0 processa imagem │   │     return QwenVLExtractor()      │
-│ • Softmax sobre 8 classes         │   │ elif backend == GOT_OCR:          │
-│ • Retorna:                        │   │     return GOTOCRExtractor()      │
+│ • Softmax sobre 8 classes         │   │ elif backend == EASY_OCR:          │
+│ • Retorna:                        │   │     return EasyOCRExtractor()      │
 │   {                               │   │                                   │
 │     document_type: "rg_aberto",   │   │ extractor.extract(image, doc_type)│
 │     confidence: 0.97,             │   │         │                         │
@@ -87,12 +87,12 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
                           ┌───────────────────────────────────────────────────┐
                           ▼                                                   ▼
 ┌──────────────────────────────────────────────┐   ┌──────────────────────────────────────────────┐
-│ 5a. QWEN-VL (extractors/qwen_vl.py)          │   │ 5b. GOT-OCR (extractors/got_ocr.py)          │
+│ 5a. QWEN-VL (extractors/qwen_vl.py)          │   │ 5b. EasyOCR (extractors/easyocr.py)          │
 │     ~16GB VRAM                               │   │     ~2GB VRAM                                │
 ├──────────────────────────────────────────────┤   ├──────────────────────────────────────────────┤
 │ extract_rg():                                │   │ extract_rg():                                │
 │                                              │   │                                              │
-│ 1. Carrega Qwen2.5-VL-7B-Instruct (lazy)     │   │ 1. Carrega GOT-OCR-2.0-hf (lazy)             │
+│ 1. Carrega Qwen2.5-VL-7B-Instruct (lazy)     │   │ 1. Carrega EasyOCR-2.0-hf (lazy)             │
 │                                              │   │                                              │
 │ 2. Monta mensagem com imagem + prompt:       │   │ 2. Extrai texto com OCR:                     │
 │    ┌────────────────────────────────────┐    │   │    ┌────────────────────────────────────┐    │
@@ -151,7 +151,7 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 │       "orgao_expedidor": "SSP-SP"                                                               │
 │     },                                                                                          │
 │     "raw_text": null,                                                                           │
-│     "backend": "qwen-vl"  ◄─── ou "got-ocr"                                                     │
+│     "backend": "qwen-vl"  ◄─── ou "easy-ocr"                                                     │
 │   },                                                                                            │
 │   "success": true,                                                                              │
 │   "error": null                                                                                 │
@@ -165,9 +165,9 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 
 ```
 ┌─────────────────────────┬────────────────────────────┬────────────────────────────┐
-│                         │         QWEN-VL            │         GOT-OCR            │
+│                         │         QWEN-VL            │         EasyOCR            │
 ├─────────────────────────┼────────────────────────────┼────────────────────────────┤
-│ Modelo                  │ Qwen2.5-VL-7B-Instruct     │ GOT-OCR-2.0-hf             │
+│ Modelo                  │ Qwen2.5-VL-7B-Instruct     │ EasyOCR-2.0-hf             │
 │ VRAM                    │ ~16GB                      │ ~2GB                       │
 │ Tempo extração          │ ~3-5s                      │ ~1-2s                      │
 ├─────────────────────────┼────────────────────────────┼────────────────────────────┤
@@ -189,9 +189,9 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 | Cenário | Recomendação |
 |---------|--------------|
 | Produção com GPU potente (24GB+) | **qwen-vl** |
-| GPU limitada (8GB) | **got-ocr** |
+| GPU limitada (8GB) | **easy-ocr** |
 | Alta precisão em campos contextuais | **qwen-vl** |
-| Alto volume, menor precisão aceitável | **got-ocr** |
+| Alto volume, menor precisão aceitável | **easy-ocr** |
 | Multi-GPU (classificador + extrator separados) | **qwen-vl** em GPU dedicada |
 
 ---
@@ -203,9 +203,9 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 | Upload + decode imagem | ~50ms |
 | Classificação (EfficientNet) | ~100ms |
 | Extração (Qwen-VL) | ~3-5s |
-| Extração (GOT-OCR) | ~1-2s |
+| Extração (EasyOCR) | ~1-2s |
 | **Total com Qwen-VL** | **~3-6s** |
-| **Total com GOT-OCR** | **~1-3s** |
+| **Total com EasyOCR** | **~1-3s** |
 
 ---
 
