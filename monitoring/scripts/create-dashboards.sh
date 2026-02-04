@@ -110,8 +110,8 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
             "mode": "absolute",
             "steps": [
               {"color": "green", "value": null},
-              {"color": "orange", "value": 1.5},
-              {"color": "red", "value": 2.5}
+              {"color": "orange", "value": 2},
+              {"color": "red", "value": 3}
             ]
           },
           "color": {"mode": "thresholds"},
@@ -121,7 +121,7 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
         },
         "overrides": []
       },
-      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true, "text": {"titleSize": 16, "valueSize": 48}},
+      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true, "text": {"titleSize": 16, "valueSize": 48}},
       "targets": [{"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"}]},
 
     {"id": 9, "type": "timeseries", "title": "Scaling Events", "gridPos": {"h": 8, "w": 10, "x": 6, "y": 1},
