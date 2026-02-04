@@ -119,11 +119,11 @@ class Settings(BaseSettings):
         description="Enable rate limiting",
     )
     rate_limit_requests: int = Field(
-        default=60,
+        default=30,
         description="Max requests per time window",
     )
     rate_limit_window: str = Field(
-        default="minute",
+        default="second",
         description="Time window for rate limit (second, minute, hour)",
     )
 
