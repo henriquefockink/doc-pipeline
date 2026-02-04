@@ -101,27 +101,23 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
 
     {"type": "row", "title": "⚡ Workers & Scaling", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false},
 
-    {"id": 7, "type": "gauge", "title": "Workers Ativos", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 1},
+    {"id": 7, "type": "stat", "title": "Workers Ativos", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
         "defaults": {
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "orange", "value": 2},
-              {"color": "red", "value": 3}
-            ]
-          },
-          "color": {"mode": "thresholds"},
-          "min": 0,
-          "max": 3,
+          "mappings": [
+            {"type": "value", "options": {"0": {"text": "0", "color": "text"}}},
+            {"type": "value", "options": {"1": {"text": "1", "color": "green"}}},
+            {"type": "value", "options": {"2": {"text": "2", "color": "orange"}}},
+            {"type": "value", "options": {"3": {"text": "3", "color": "red"}}}
+          ],
+          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
+          "color": {"mode": "fixed", "fixedColor": "text"},
           "unit": "none"
         },
         "overrides": []
       },
-      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true, "text": {"titleSize": 16, "valueSize": 48}},
+      "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value", "text": {"titleSize": 20, "valueSize": 72}},
       "targets": [{"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"}]},
 
     {"id": 9, "type": "timeseries", "title": "Scaling Events", "gridPos": {"h": 8, "w": 10, "x": 6, "y": 1},
