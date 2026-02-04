@@ -20,6 +20,9 @@ from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, Uploa
 from fastapi.responses import JSONResponse
 from PIL import Image
 from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from doc_pipeline import PipelineResult
 from doc_pipeline.auth import AuthInfo, require_api_key
@@ -52,6 +55,21 @@ logger = get_logger("api")
 
 # Global queue service
 queue_service: QueueService | None = None
+
+# Rate limiter - key by client IP or API key
+def get_rate_limit_key(request: Request) -> str:
+    """Get rate limit key from API key header or IP address."""
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key:
+        return f"apikey:{api_key[:8]}"  # Use first 8 chars of API key
+    return get_remote_address(request)
+
+# Create limiter with Redis backend for distributed rate limiting
+limiter = Limiter(
+    key_func=get_rate_limit_key,
+    storage_uri=settings.redis_url,
+    enabled=settings.rate_limit_enabled,
+)
 
 
 class DeliveryMode(str, Enum):
@@ -112,6 +130,10 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+# Rate limiting setup
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Adiciona middleware de métricas (api_only=True filtra apenas endpoints da API)
 app.add_middleware(PrometheusMiddleware)
@@ -286,6 +308,7 @@ async def list_classes(auth: AuthInfo = Depends(require_api_key)):
 
 
 @app.post("/classify")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def classify(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
@@ -405,6 +428,7 @@ async def classify(
 
 
 @app.post("/extract")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def extract(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
@@ -560,6 +584,7 @@ async def extract(
 
 
 @app.post("/process")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def process(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
@@ -700,6 +725,7 @@ OCR_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bm
 
 
 @app.post("/ocr")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def ocr(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="PDF ou imagem para OCR")],

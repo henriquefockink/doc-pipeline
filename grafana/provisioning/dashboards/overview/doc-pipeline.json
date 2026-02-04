@@ -113,11 +113,19 @@
           },
           "mappings": [],
           "thresholds": {
-            "mode": "absolute",
+            "mode": "thresholds",
             "steps": [
               {
                 "color": "green",
-                "value": null
+                "value": 0.5
+              },
+              {
+                "color": "orange",
+                "value": 1.5
+              },
+              {
+                "color": "red",
+                "value": 2.5
               }
             ]
           },

@@ -113,6 +113,20 @@ class Settings(BaseSettings):
         description="Maximum Redis connections in pool",
     )
 
+    # Rate limiting
+    rate_limit_enabled: bool = Field(
+        default=True,
+        description="Enable rate limiting",
+    )
+    rate_limit_requests: int = Field(
+        default=60,
+        description="Max requests per time window",
+    )
+    rate_limit_window: str = Field(
+        default="minute",
+        description="Time window for rate limit (second, minute, hour)",
+    )
+
     # Queue settings
     max_queue_size: int = Field(
         default=100,
