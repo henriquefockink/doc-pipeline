@@ -18,7 +18,7 @@ except AttributeError:
 
 from .classifier import ClassifierAdapter
 from .config import ExtractorBackend, Settings, get_settings
-from .extractors import BaseExtractor, EasyOCRExtractor, QwenVLExtractor
+from .extractors import BaseExtractor, QwenVLExtractor
 from .schemas import (
     ClassificationResult,
     DocumentType,
@@ -106,9 +106,16 @@ class DocumentPipeline:
                     device=self._extractor_device,
                 )
             elif self._extractor_backend == ExtractorBackend.EASY_OCR:
+                from .extractors.easyocr import EasyOCRExtractor
                 self._extractor = EasyOCRExtractor(
                     lang=self._settings.ocr_language,
                     use_gpu=self._settings.ocr_use_gpu,
+                    device=self._extractor_device,
+                )
+            elif self._extractor_backend == ExtractorBackend.HYBRID:
+                from .extractors.hybrid import HybridExtractor
+                self._extractor = HybridExtractor(
+                    model_name=self._settings.extractor_model_qwen,
                     device=self._extractor_device,
                 )
             else:

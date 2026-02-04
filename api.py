@@ -61,6 +61,24 @@ class DeliveryMode(str, Enum):
     WEBHOOK = "webhook"
 
 
+class ExtractorBackend(str, Enum):
+    """
+    Extractor backends for document data extraction.
+
+    Tradeoffs:
+    - **hybrid** (default): EasyOCR + VLM. Melhor precisão em CPF/números (~15s).
+      Combina OCR preciso para dígitos com VLM para estruturar campos.
+    - **vlm**: Apenas Qwen VL. Mais rápido (~5s) mas pode confundir dígitos (4↔6).
+      Bom para documentos com boa qualidade de imagem.
+    - **ocr**: Apenas EasyOCR. Mais rápido (~2s), retorna texto bruto.
+      Útil quando só precisa do texto sem estruturação.
+    """
+
+    HYBRID = "hybrid"
+    VLM = "vlm"
+    OCR = "ocr"
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Gerencia ciclo de vida da aplicação."""
@@ -391,6 +409,9 @@ async def extract(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     doc_type: Annotated[str, Query(description="Tipo do documento (rg_frente, cnh_frente, etc)")],
+    backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
+    validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
+    auto_rotate: Annotated[bool, Query(description="Corrigir orientação automaticamente")] = True,
     delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
     webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
@@ -399,7 +420,20 @@ async def extract(
     """
     Extrai dados de uma imagem de documento.
 
-    Requer que o tipo do documento seja especificado.
+    Requer que o tipo do documento seja especificado (rg_frente, cnh_frente, etc).
+
+    ## Backends de Extração
+
+    | Backend | Tempo | Precisão CPF | Uso |
+    |---------|-------|--------------|-----|
+    | **hybrid** | ~15s | ✅ Alta | Padrão. Melhor para documentos com números críticos |
+    | **vlm** | ~5s | ⚠️ Média | Quando velocidade é prioridade |
+    | **ocr** | ~2s | ✅ Alta | Apenas texto bruto, sem estruturação |
+
+    ## Correção de Orientação
+
+    Com `auto_rotate=True` (padrão), imagens rotacionadas são corrigidas automaticamente.
+    Use `auto_rotate=False` se a imagem já está na orientação correta (economiza ~4s).
     """
     if queue_service is None:
         raise HTTPException(status_code=503, detail="Queue service not connected")
@@ -448,6 +482,7 @@ async def extract(
             delivery_mode=delivery_mode.value,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
+            extra_params={"backend": backend.value, "validate_cpf": validate_cpf, "auto_rotate": auto_rotate},
         )
 
         # Enqueue
@@ -457,6 +492,8 @@ async def extract(
             "extract_enqueued",
             request_id=job.request_id,
             doc_type=doc_type,
+            backend=backend.value,
+            auto_rotate=auto_rotate,
             delivery_mode=delivery_mode.value,
             filename=arquivo.filename,
             client=client,
@@ -528,6 +565,9 @@ async def process(
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     extract: Annotated[bool, Query(description="Se deve extrair dados")] = True,
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Confiança mínima")] = 0.5,
+    backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
+    validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
+    auto_rotate: Annotated[bool, Query(description="Corrigir orientação automaticamente")] = True,
     delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
     webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
@@ -537,6 +577,19 @@ async def process(
     Pipeline completo: classifica e extrai dados de uma imagem de documento.
 
     Este é o endpoint principal que executa classificação e extração em sequência.
+
+    ## Backends de Extração
+
+    | Backend | Tempo | Precisão CPF | Uso |
+    |---------|-------|--------------|-----|
+    | **hybrid** | ~15s | ✅ Alta | Padrão. Melhor para documentos com números críticos |
+    | **vlm** | ~5s | ⚠️ Média | Quando velocidade é prioridade |
+    | **ocr** | ~2s | ✅ Alta | Apenas texto bruto, sem estruturação |
+
+    ## Correção de Orientação
+
+    Com `auto_rotate=True` (padrão), imagens rotacionadas são corrigidas automaticamente.
+    Isso adiciona ~4s ao processamento. Use `auto_rotate=False` se a imagem já está correta.
     """
     if queue_service is None:
         raise HTTPException(status_code=503, detail="Queue service not connected")
@@ -566,6 +619,7 @@ async def process(
             delivery_mode=delivery_mode.value,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
+            extra_params={"backend": backend.value, "validate_cpf": validate_cpf, "auto_rotate": auto_rotate},
         )
 
         # Enqueue
@@ -575,6 +629,8 @@ async def process(
             "process_enqueued",
             request_id=job.request_id,
             extract=extract,
+            backend=backend.value,
+            auto_rotate=auto_rotate,
             delivery_mode=delivery_mode.value,
             filename=arquivo.filename,
             client=client,

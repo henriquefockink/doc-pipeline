@@ -21,8 +21,10 @@ from PIL import Image
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from doc_pipeline import DocumentPipeline
-from doc_pipeline.config import get_settings
+from doc_pipeline.config import ExtractorBackend, get_settings
 from doc_pipeline.observability import get_logger, get_metrics, setup_logging
+from doc_pipeline.preprocessing import OrientationCorrector
+from doc_pipeline.utils import validate_cpf
 from doc_pipeline.shared import (
     DeliveryService,
     JobContext,
@@ -44,11 +46,21 @@ logger = get_logger("worker")
 class DocumentWorker:
     """Worker that processes document jobs from Redis queue."""
 
+    # Map public backend names to internal ones
+    BACKEND_MAP = {
+        "vlm": "qwen-vl",
+        "ocr": "easy-ocr",
+        "hybrid": "hybrid",
+    }
+
     def __init__(self):
         self.pipeline: DocumentPipeline | None = None
+        self.pipeline_ocr: DocumentPipeline | None = None  # OCR fallback pipeline
+        self.pipeline_hybrid: DocumentPipeline | None = None  # Hybrid pipeline
         self.queue: QueueService = get_queue_service()
         self.delivery: DeliveryService = get_delivery_service()
         self.metrics = get_metrics()
+        self.orientation_corrector = OrientationCorrector(use_text_detection=True)
         self._running = False
         self._current_job: JobContext | None = None
 
@@ -118,6 +130,30 @@ class DocumentWorker:
                 # Brief pause before retrying
                 await asyncio.sleep(1.0)
 
+    def _get_pipeline(self, job: JobContext) -> DocumentPipeline:
+        """Get the appropriate pipeline based on job backend."""
+        backend = (job.extra_params or {}).get("backend", "vlm")
+
+        if backend == "ocr":
+            # Lazy init OCR pipeline
+            if self.pipeline_ocr is None:
+                logger.info("initializing_ocr_pipeline")
+                self.pipeline_ocr = DocumentPipeline(
+                    extractor_backend=ExtractorBackend.EASY_OCR,
+                )
+            return self.pipeline_ocr
+
+        if backend == "hybrid":
+            # Lazy init hybrid pipeline
+            if self.pipeline_hybrid is None:
+                logger.info("initializing_hybrid_pipeline")
+                self.pipeline_hybrid = DocumentPipeline(
+                    extractor_backend=ExtractorBackend.HYBRID,
+                )
+            return self.pipeline_hybrid
+
+        return self.pipeline  # type: ignore
+
     async def _process_job(self, job: JobContext) -> None:
         """Process a single job."""
         if self.pipeline is None:
@@ -127,10 +163,14 @@ class DocumentWorker:
         job.mark_started()
         start_time = time.perf_counter()
 
+        # Get backend from job
+        backend = (job.extra_params or {}).get("backend", "vlm")
+
         logger.info(
             "job_processing_start",
             request_id=job.request_id,
             operation=job.operation,
+            backend=backend,
             client=job.client_name,
             delivery_mode=job.delivery_mode,
         )
@@ -149,24 +189,65 @@ class DocumentWorker:
 
             image = Image.open(job.image_path).convert("RGB")
 
+            # Orientation correction (can be disabled via auto_rotate=False)
+            auto_rotate = (job.extra_params or {}).get("auto_rotate", True)
+            if auto_rotate:
+                orientation_result = self.orientation_corrector.correct(image)
+                if orientation_result.was_corrected:
+                    logger.info(
+                        "image_orientation_corrected",
+                        rotation=orientation_result.rotation_applied.value,
+                        method=orientation_result.correction_method,
+                        request_id=job.request_id,
+                    )
+                    image = orientation_result.image
+                image_correction_info = orientation_result.to_dict()
+            else:
+                logger.info("orientation_correction_skipped", request_id=job.request_id)
+                image_correction_info = {"was_corrected": False, "rotation_applied": 0, "skipped": True}
+
+            # Get pipeline (vlm or ocr based on backend param)
+            pipeline = self._get_pipeline(job)
+
             # Process based on operation
             if job.operation == "classify":
-                result = self.pipeline.classify(image)
-                job.mark_completed(result=result.model_dump())
+                result = pipeline.classify(image)
+                result_dict = result.model_dump()
+                result_dict["image_correction"] = image_correction_info
+                job.mark_completed(result=result_dict)
 
             elif job.operation == "extract":
                 if not job.document_type:
                     raise ValueError("document_type required for extract operation")
-                result = self.pipeline.extract(image, job.document_type)
-                job.mark_completed(result=result.model_dump())
+                result = pipeline.extract(image, job.document_type)
+                result_dict = result.model_dump()
+                result_dict["image_correction"] = image_correction_info
+
+                # Validate CPF if requested
+                should_validate_cpf = (job.extra_params or {}).get("validate_cpf", True)
+                if should_validate_cpf and result.data and hasattr(result.data, "cpf"):
+                    cpf_validation = validate_cpf(result.data.cpf)
+                    result_dict["cpf_validation"] = cpf_validation
+
+                job.mark_completed(result=result_dict)
 
             elif job.operation == "process":
-                result = self.pipeline.process(
+                result = pipeline.process(
                     image,
                     extract=job.extract,
                     min_confidence=job.min_confidence,
                 )
-                job.mark_completed(result=result.model_dump())
+                result_dict = result.model_dump()
+                result_dict["image_correction"] = image_correction_info
+
+                # Validate CPF if requested and extraction was done
+                should_validate_cpf = (job.extra_params or {}).get("validate_cpf", True)
+                if should_validate_cpf and result.extraction and result.extraction.data:
+                    if hasattr(result.extraction.data, "cpf"):
+                        cpf_validation = validate_cpf(result.extraction.data.cpf)
+                        result_dict["cpf_validation"] = cpf_validation
+
+                job.mark_completed(result=result_dict)
 
             else:
                 raise ValueError(f"Unknown operation: {job.operation}")

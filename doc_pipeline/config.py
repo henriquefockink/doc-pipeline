@@ -15,6 +15,7 @@ class ExtractorBackend(str, Enum):
 
     QWEN_VL = "qwen-vl"
     EASY_OCR = "easy-ocr"
+    HYBRID = "hybrid"
 
 
 class Settings(BaseSettings):
@@ -48,8 +49,8 @@ class Settings(BaseSettings):
 
     # Extractor settings
     extractor_backend: ExtractorBackend = Field(
-        default=ExtractorBackend.QWEN_VL,
-        description="Backend para extração (qwen-vl ou easy-ocr)",
+        default=ExtractorBackend.HYBRID,
+        description="Backend para extração (qwen-vl, easy-ocr ou hybrid)",
     )
     extractor_device: str = Field(
         default="cuda:0",

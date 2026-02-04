@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..ocr import OCREngine
+from ..ocr.engine import OCREngine
 from ..schemas import CNHData, RGData
 from .base import BaseExtractor
 

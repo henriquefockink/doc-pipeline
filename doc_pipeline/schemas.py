@@ -86,6 +86,21 @@ class CNHData(BaseModel):
     )
 
 
+class ImageCorrection(BaseModel):
+    """Information about image preprocessing corrections applied."""
+
+    was_corrected: bool = Field(description="Whether any correction was applied")
+    rotation_applied: int = Field(
+        default=0, description="Rotation applied in degrees (0, 90, 180, 270)"
+    )
+    correction_method: str | None = Field(
+        default=None, description="Method used: 'exif', 'text_detection', or 'exif+text_detection'"
+    )
+    confidence: float | None = Field(
+        default=None, description="Confidence of text-based detection (if used)"
+    )
+
+
 class ClassificationResult(BaseModel):
     """Resultado da classificação de um documento."""
 
@@ -115,6 +130,9 @@ class PipelineResult(BaseModel):
     classification: ClassificationResult = Field(description="Resultado da classificação")
     extraction: ExtractionResult | None = Field(
         default=None, description="Resultado da extração (None se não extraído)"
+    )
+    image_correction: ImageCorrection | None = Field(
+        default=None, description="Info about image orientation correction (if applied)"
     )
     success: bool = Field(default=True, description="Se o processamento foi bem-sucedido")
     error: str | None = Field(default=None, description="Mensagem de erro, se houver")
