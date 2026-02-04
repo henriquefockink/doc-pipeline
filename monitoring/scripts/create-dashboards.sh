@@ -128,7 +128,7 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
     {"id": 9, "type": "timeseries", "title": "Scaling Events", "gridPos": {"h": 8, "w": 10, "x": 6, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 20, "pointSize": 8, "showPoints": "auto", "axisSoftMin": 0, "axisSoftMax": 3}},
+        "defaults": {"color": {"mode": "palette-classic"}, "min": 0, "max": 3, "custom": {"drawStyle": "line", "fillOpacity": 20, "pointSize": 8, "showPoints": "auto"}},
         "overrides": [
           {"matcher": {"id": "byName", "options": "Scale Up"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 5}]},
           {"matcher": {"id": "byName", "options": "Scale Down"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 5}]},
@@ -138,8 +138,8 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom"}},
       "targets": [
         {"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"},
-        {"expr": "clamp_min(delta(count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)[2m:30s]), 0) * 3", "legendFormat": "Scale Up"},
-        {"expr": "clamp_min(-delta(count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)[2m:30s]), 0) * -0.5", "legendFormat": "Scale Down"}
+        {"expr": "(clamp_min(delta(count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)[2m:30s]), 0) > 0) * 2.8", "legendFormat": "Scale Up"},
+        {"expr": "(clamp_min(-delta(count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)[2m:30s]), 0) > 0) * 0.2", "legendFormat": "Scale Down"}
       ]},
 
     {"id": 1, "type": "stat", "title": "Queue", "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
