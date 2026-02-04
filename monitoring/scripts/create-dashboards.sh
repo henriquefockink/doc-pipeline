@@ -139,9 +139,9 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
 
     {"id": 7, "type": "gauge", "title": "Workers", "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "min": 0, "max": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "unit": "none"}},
-      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
-      "targets": [{"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)", "legendFormat": "Workers"}]},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "min": 1, "max": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 2}, {"color": "red", "value": 3}]}, "unit": "none"}},
+      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true},
+      "targets": [{"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"}]},
 
     {"id": 8, "type": "stat", "title": "Confidence", "gridPos": {"h": 4, "w": 3, "x": 21, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
