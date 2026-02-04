@@ -99,45 +99,9 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
 
-    {"type": "row", "title": "📊 Overview", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false},
+    {"type": "row", "title": "⚡ Workers & Scaling", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false},
 
-    {"id": 1, "type": "stat", "title": "Queue", "gridPos": {"h": 4, "w": 3, "x": 0, "y": 1},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}, "unit": "none"}},
-      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "max(doc_pipeline_queue_depth{job=~\"doc-pipeline-worker-docid.*\"})", "legendFormat": "Queue"}]},
-
-    {"id": 2, "type": "stat", "title": "Req/min", "gridPos": {"h": 4, "w": 3, "x": 3, "y": 1},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short", "decimals": 1}},
-      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(rate(doc_pipeline_requests_total[5m])) * 60", "legendFormat": "Req/min"}]},
-
-    {"id": 3, "type": "stat", "title": "Jobs (período)", "gridPos": {"h": 4, "w": 3, "x": 6, "y": 1},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
-      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\"}[$__range]))", "legendFormat": "Jobs"}]},
-
-    {"id": 4, "type": "stat", "title": "Latency P95", "gridPos": {"h": 4, "w": 3, "x": 9, "y": 1},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 30}]}, "unit": "s"}},
-      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P95"}]},
-
-    {"id": 5, "type": "stat", "title": "Error Rate", "gridPos": {"h": 4, "w": 3, "x": 12, "y": 1},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}, "unit": "percentunit", "max": 1}},
-      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total[5m])) or vector(0)", "legendFormat": "Error Rate"}]},
-
-    {"id": 6, "type": "stat", "title": "Erros (período)", "gridPos": {"h": 4, "w": 3, "x": 15, "y": 1},
-      "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "short"}},
-      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{status=\"error\"}[$__range])) or vector(0)", "legendFormat": "Erros"}]},
-
-    {"id": 7, "type": "gauge", "title": "Workers", "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
+    {"id": 7, "type": "gauge", "title": "Workers Ativos", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
         "defaults": {
@@ -158,18 +122,71 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
         },
         "overrides": []
       },
-      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true},
+      "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": true, "showThresholdMarkers": true, "text": {"titleSize": 16, "valueSize": 48}},
       "targets": [{"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"}]},
 
-    {"id": 8, "type": "stat", "title": "Confidence", "gridPos": {"h": 4, "w": 3, "x": 21, "y": 1},
+    {"id": 9, "type": "timeseries", "title": "Scaling Events", "gridPos": {"h": 8, "w": 10, "x": 6, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {
+        "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 20, "pointSize": 8, "showPoints": "auto", "axisSoftMin": 0, "axisSoftMax": 3}},
+        "overrides": [
+          {"matcher": {"id": "byName", "options": "Scale Up"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 12}]},
+          {"matcher": {"id": "byName", "options": "Scale Down"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 12}]},
+          {"matcher": {"id": "byName", "options": "Workers"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]}
+        ]
+      },
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom"}},
+      "targets": [
+        {"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"},
+        {"expr": "clamp_min(delta(count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)[2m:30s]), 0) * 3", "legendFormat": "Scale Up"},
+        {"expr": "clamp_min(-delta(count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)[2m:30s]), 0) * -0.5", "legendFormat": "Scale Down"}
+      ]},
+
+    {"id": 1, "type": "stat", "title": "Queue", "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}, "unit": "none"}},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"expr": "max(doc_pipeline_queue_depth{job=~\"doc-pipeline-worker-docid.*\"})", "legendFormat": "Queue"}]},
+
+    {"id": 8, "type": "stat", "title": "Confidence", "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 0.7}, {"color": "green", "value": 0.9}]}, "unit": "percentunit", "min": 0, "max": 1}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
       "targets": [{"expr": "histogram_quantile(0.5, sum(rate(doc_pipeline_classification_confidence_bucket[5m])) by (le))", "legendFormat": "Median"}]},
 
-    {"type": "row", "title": "🔄 Autoscaler", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}, "collapsed": false},
+    {"id": 4, "type": "stat", "title": "Latency P95", "gridPos": {"h": 4, "w": 4, "x": 16, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10}, {"color": "red", "value": 30}]}, "unit": "s"}},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_request_duration_seconds_bucket[5m])) by (le))", "legendFormat": "P95"}]},
 
-    {"id": 10, "type": "timeseries", "title": "Queue vs Workers", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+    {"id": 5, "type": "stat", "title": "Error Rate", "gridPos": {"h": 4, "w": 4, "x": 20, "y": 5},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}, "unit": "percentunit", "max": 1}},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total[5m])) or vector(0)", "legendFormat": "Error Rate"}]},
+
+    {"type": "row", "title": "📊 Overview", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9}, "collapsed": false},
+
+    {"id": 2, "type": "stat", "title": "Req/min", "gridPos": {"h": 4, "w": 4, "x": 0, "y": 10},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short", "decimals": 1}},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"expr": "sum(rate(doc_pipeline_requests_total[5m])) * 60", "legendFormat": "Req/min"}]},
+
+    {"id": 3, "type": "stat", "title": "Jobs (período)", "gridPos": {"h": 4, "w": 4, "x": 4, "y": 10},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\"}[$__range]))", "legendFormat": "Jobs"}]},
+
+    {"id": 6, "type": "stat", "title": "Erros (período)", "gridPos": {"h": 4, "w": 4, "x": 8, "y": 10},
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "short"}},
+      "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
+      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{status=\"error\"}[$__range])) or vector(0)", "legendFormat": "Erros"}]},
+
+    {"id": 10, "type": "timeseries", "title": "Queue vs Workers", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 10},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "axisSoftMin": 0}}},
       "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"}},
@@ -179,24 +196,24 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
         {"expr": "5", "legendFormat": "Scale Threshold"}
       ]},
 
-    {"id": 11, "type": "timeseries", "title": "Queue Wait Time", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+    {"id": 11, "type": "timeseries", "title": "Queue Wait Time", "gridPos": {"h": 4, "w": 12, "x": 0, "y": 14},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
-      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
+      "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "list", "placement": "right"}},
       "targets": [
         {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le))", "legendFormat": "P50"},
         {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le))", "legendFormat": "P95"}
       ]},
 
-    {"type": "row", "title": "🌐 API", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}, "collapsed": false},
+    {"type": "row", "title": "🌐 API", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18}, "collapsed": false},
 
-    {"id": 20, "type": "timeseries", "title": "Request Rate por Endpoint", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 15},
+    {"id": 20, "type": "timeseries", "title": "Request Rate por Endpoint", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 19},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 20}}},
       "options": {"legend": {"calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom"}},
       "targets": [{"expr": "sum by (endpoint) (rate(doc_pipeline_requests_total[5m]))", "legendFormat": "{{endpoint}}"}]},
 
-    {"id": 21, "type": "timeseries", "title": "Latency por Endpoint (P50/P95)", "gridPos": {"h": 8, "w": 8, "x": 8, "y": 15},
+    {"id": 21, "type": "timeseries", "title": "Latency por Endpoint (P50/P95)", "gridPos": {"h": 8, "w": 8, "x": 8, "y": 19},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
@@ -205,15 +222,15 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
         {"expr": "histogram_quantile(0.95, sum by (endpoint, le) (rate(doc_pipeline_request_duration_seconds_bucket[5m])))", "legendFormat": "P95 {{endpoint}}"}
       ]},
 
-    {"id": 22, "type": "timeseries", "title": "Status Codes", "gridPos": {"h": 8, "w": 8, "x": 16, "y": 15},
+    {"id": 22, "type": "timeseries", "title": "Status Codes", "gridPos": {"h": 8, "w": 8, "x": 16, "y": 19},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps", "custom": {"drawStyle": "bars", "fillOpacity": 80, "stacking": {"mode": "normal"}}}},
       "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom"}},
       "targets": [{"expr": "sum by (status) (rate(doc_pipeline_requests_total[5m]))", "legendFormat": "{{status}}"}]},
 
-    {"type": "row", "title": "⚙️ Workers", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23}, "collapsed": false},
+    {"type": "row", "title": "⚙️ Processing", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 27}, "collapsed": false},
 
-    {"id": 30, "type": "timeseries", "title": "Processing Time por Operação (P50/P95)", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+    {"id": 30, "type": "timeseries", "title": "Processing Time por Operação (P50/P95)", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 28},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
@@ -222,21 +239,21 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
         {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le, operation))", "legendFormat": "P95 {{operation}}"}
       ]},
 
-    {"id": 31, "type": "timeseries", "title": "Jobs por Status", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+    {"id": 31, "type": "timeseries", "title": "Jobs por Status", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 20}}},
       "options": {"legend": {"calcs": ["mean", "sum"], "displayMode": "table", "placement": "bottom"}},
       "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (operation, status)", "legendFormat": "{{operation}} - {{status}}"}]},
 
-    {"type": "row", "title": "📄 Documents", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32}, "collapsed": false},
+    {"type": "row", "title": "📄 Documents", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 36}, "collapsed": false},
 
-    {"id": 40, "type": "timeseries", "title": "Documentos por Tipo", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+    {"id": 40, "type": "timeseries", "title": "Documentos por Tipo", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 37},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "stacking": {"mode": "normal"}}}},
       "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom"}},
       "targets": [{"expr": "increase(doc_pipeline_documents_processed_total[1h])", "legendFormat": "{{document_type}}"}]},
 
-    {"id": 41, "type": "timeseries", "title": "Classification Confidence", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+    {"id": 41, "type": "timeseries", "title": "Classification Confidence", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 37},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "percentunit", "min": 0, "max": 1, "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "lastNotNull"], "displayMode": "table", "placement": "bottom"}},
@@ -246,34 +263,34 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
         {"expr": "histogram_quantile(0.05, sum(rate(doc_pipeline_classification_confidence_bucket[5m])) by (le))", "legendFormat": "P5 (worst)"}
       ]},
 
-    {"type": "row", "title": "👥 Clients", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 41}, "collapsed": false},
+    {"type": "row", "title": "👥 Clients", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 45}, "collapsed": false},
 
-    {"id": 50, "type": "piechart", "title": "Requests por Cliente (período)", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 42},
+    {"id": 50, "type": "piechart", "title": "Requests por Cliente (período)", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 46},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
       "options": {"legend": {"displayMode": "table", "placement": "right", "values": ["percent", "value"]}, "pieType": "pie", "reduceOptions": {"calcs": ["lastNotNull"]}},
       "targets": [{"expr": "sum(increase(doc_pipeline_requests_by_client_total[$__range])) by (client)", "legendFormat": "{{client}}"}]},
 
-    {"id": 51, "type": "timeseries", "title": "Requests por Cliente", "gridPos": {"h": 8, "w": 16, "x": 8, "y": 42},
+    {"id": 51, "type": "timeseries", "title": "Requests por Cliente", "gridPos": {"h": 8, "w": 16, "x": 8, "y": 46},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "reqps", "custom": {"drawStyle": "line", "fillOpacity": 20}}},
       "options": {"legend": {"calcs": ["sum", "lastNotNull"], "displayMode": "table", "placement": "bottom"}},
       "targets": [{"expr": "sum(rate(doc_pipeline_requests_by_client_total[5m])) by (client)", "legendFormat": "{{client}}"}]},
 
-    {"type": "row", "title": "📤 Webhooks", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 50}, "collapsed": true, "panels": [
-      {"id": 60, "type": "stat", "title": "Delivered (período)", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 51},
+    {"type": "row", "title": "📤 Webhooks", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 54}, "collapsed": true, "panels": [
+      {"id": 60, "type": "stat", "title": "Delivered (período)", "gridPos": {"h": 4, "w": 6, "x": 0, "y": 55},
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
         "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "short"}},
         "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
         "targets": [{"expr": "sum(increase(doc_pipeline_webhook_deliveries_total{status=\"success\"}[$__range])) or vector(0)", "legendFormat": "Delivered"}]},
 
-      {"id": 61, "type": "stat", "title": "Failed (período)", "gridPos": {"h": 4, "w": 6, "x": 6, "y": 51},
+      {"id": 61, "type": "stat", "title": "Failed (período)", "gridPos": {"h": 4, "w": 6, "x": 6, "y": 55},
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
         "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "short"}},
         "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
         "targets": [{"expr": "sum(increase(doc_pipeline_webhook_deliveries_total{status=\"failed\"}[$__range])) or vector(0)", "legendFormat": "Failed"}]},
 
-      {"id": 62, "type": "timeseries", "title": "Webhook Deliveries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 51},
+      {"id": 62, "type": "timeseries", "title": "Webhook Deliveries", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 55},
         "datasource": {"type": "prometheus", "uid": "${datasource}"},
         "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 20}}},
         "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom"}},
