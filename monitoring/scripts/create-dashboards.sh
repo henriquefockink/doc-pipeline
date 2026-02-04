@@ -130,8 +130,8 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "fieldConfig": {
         "defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 20, "pointSize": 8, "showPoints": "auto", "axisSoftMin": 0, "axisSoftMax": 3}},
         "overrides": [
-          {"matcher": {"id": "byName", "options": "Scale Up"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 12}]},
-          {"matcher": {"id": "byName", "options": "Scale Down"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 12}]},
+          {"matcher": {"id": "byName", "options": "Scale Up"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 5}]},
+          {"matcher": {"id": "byName", "options": "Scale Down"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 5}]},
           {"matcher": {"id": "byName", "options": "Workers"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]}
         ]
       },
