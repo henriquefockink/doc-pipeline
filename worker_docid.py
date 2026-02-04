@@ -14,7 +14,6 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import structlog
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 from PIL import Image
