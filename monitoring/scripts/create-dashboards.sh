@@ -159,7 +159,7 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}, "unit": "percentunit", "max": 1}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total[5m])) or vector(0)", "legendFormat": "Error Rate"}]},
+      "targets": [{"expr": "sum(rate(doc_pipeline_requests_total{status=~\"4..|5..\"}[5m])) / sum(rate(doc_pipeline_requests_total[5m])) or vector(0)", "legendFormat": "Error Rate"}]},
 
     {"type": "row", "title": "📊 Overview", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 9}, "collapsed": false},
 
