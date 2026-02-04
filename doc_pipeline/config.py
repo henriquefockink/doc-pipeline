@@ -14,7 +14,8 @@ class ExtractorBackend(str, Enum):
     """Backends disponíveis para extração de dados."""
 
     QWEN_VL = "qwen-vl"
-    GOT_OCR = "got-ocr"
+    EASY_OCR = "easy-ocr"
+    HYBRID = "hybrid"
 
 
 class Settings(BaseSettings):
@@ -48,8 +49,8 @@ class Settings(BaseSettings):
 
     # Extractor settings
     extractor_backend: ExtractorBackend = Field(
-        default=ExtractorBackend.QWEN_VL,
-        description="Backend para extração (qwen-vl ou got-ocr)",
+        default=ExtractorBackend.HYBRID,
+        description="Backend para extração (qwen-vl, easy-ocr ou hybrid)",
     )
     extractor_device: str = Field(
         default="cuda:0",
@@ -58,10 +59,6 @@ class Settings(BaseSettings):
     extractor_model_qwen: str = Field(
         default="Qwen/Qwen2.5-VL-7B-Instruct",
         description="Modelo Qwen-VL a usar",
-    )
-    extractor_model_got: str = Field(
-        default="stepfun-ai/GOT-OCR-2.0-hf",
-        description="Modelo GOT-OCR a usar",
     )
 
     # API settings
@@ -72,6 +69,7 @@ class Settings(BaseSettings):
     api_key: str | None = Field(default=None, description="API key master (env)")
     api_keys: str | None = Field(default=None, description="Lista de API keys master separadas por vírgula")
     database_url: str | None = Field(default=None, description="PostgreSQL URL para API keys dinâmicas")
+    warmup_api_key: str | None = Field(default=None, description="API key dedicada para endpoint /warmup")
 
     @property
     def api_keys_list(self) -> list[str]:
@@ -113,6 +111,20 @@ class Settings(BaseSettings):
     redis_max_connections: int = Field(
         default=20,
         description="Maximum Redis connections in pool",
+    )
+
+    # Rate limiting
+    rate_limit_enabled: bool = Field(
+        default=True,
+        description="Enable rate limiting",
+    )
+    rate_limit_requests: int = Field(
+        default=30,
+        description="Max requests per time window",
+    )
+    rate_limit_window: str = Field(
+        default="second",
+        description="Time window for rate limit (second, minute, hour)",
     )
 
     # Queue settings

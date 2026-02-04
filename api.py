@@ -19,7 +19,10 @@ from typing import Annotated
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 
 from doc_pipeline import PipelineResult
 from doc_pipeline.auth import AuthInfo, require_api_key
@@ -53,12 +56,45 @@ logger = get_logger("api")
 # Global queue service
 queue_service: QueueService | None = None
 
+# Rate limiter - key by client IP or API key
+def get_rate_limit_key(request: Request) -> str:
+    """Get rate limit key from API key header or IP address."""
+    api_key = request.headers.get("X-API-Key", "")
+    if api_key:
+        return f"apikey:{api_key[:8]}"  # Use first 8 chars of API key
+    return get_remote_address(request)
+
+# Create limiter with Redis backend for distributed rate limiting
+limiter = Limiter(
+    key_func=get_rate_limit_key,
+    storage_uri=settings.redis_url,
+    enabled=settings.rate_limit_enabled,
+)
+
 
 class DeliveryMode(str, Enum):
     """Delivery modes for job results."""
 
     SYNC = "sync"
     WEBHOOK = "webhook"
+
+
+class ExtractorBackend(str, Enum):
+    """
+    Extractor backends for document data extraction.
+
+    Tradeoffs:
+    - **hybrid** (default): EasyOCR + VLM. Melhor precisão em CPF/números (~15s).
+      Combina OCR preciso para dígitos com VLM para estruturar campos.
+    - **vlm**: Apenas Qwen VL. Mais rápido (~5s) mas pode confundir dígitos (4↔6).
+      Bom para documentos com boa qualidade de imagem.
+    - **ocr**: Apenas EasyOCR. Mais rápido (~2s), retorna texto bruto.
+      Útil quando só precisa do texto sem estruturação.
+    """
+
+    HYBRID = "hybrid"
+    VLM = "vlm"
+    OCR = "ocr"
 
 
 @asynccontextmanager
@@ -94,6 +130,10 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+# Rate limiting setup
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Adiciona middleware de métricas (api_only=True filtra apenas endpoints da API)
 app.add_middleware(PrometheusMiddleware)
@@ -268,6 +308,7 @@ async def list_classes(auth: AuthInfo = Depends(require_api_key)):
 
 
 @app.post("/classify")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def classify(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
@@ -387,10 +428,14 @@ async def classify(
 
 
 @app.post("/extract")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def extract(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     doc_type: Annotated[str, Query(description="Tipo do documento (rg_frente, cnh_frente, etc)")],
+    backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
+    validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
+    auto_rotate: Annotated[bool, Query(description="Corrigir orientação automaticamente")] = True,
     delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
     webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
@@ -399,7 +444,20 @@ async def extract(
     """
     Extrai dados de uma imagem de documento.
 
-    Requer que o tipo do documento seja especificado.
+    Requer que o tipo do documento seja especificado (rg_frente, cnh_frente, etc).
+
+    ## Backends de Extração
+
+    | Backend | Tempo | Precisão CPF | Uso |
+    |---------|-------|--------------|-----|
+    | **hybrid** | ~15s | ✅ Alta | Padrão. Melhor para documentos com números críticos |
+    | **vlm** | ~5s | ⚠️ Média | Quando velocidade é prioridade |
+    | **ocr** | ~2s | ✅ Alta | Apenas texto bruto, sem estruturação |
+
+    ## Correção de Orientação
+
+    Com `auto_rotate=True` (padrão), imagens rotacionadas são corrigidas automaticamente.
+    Use `auto_rotate=False` se a imagem já está na orientação correta (economiza ~4s).
     """
     if queue_service is None:
         raise HTTPException(status_code=503, detail="Queue service not connected")
@@ -448,6 +506,7 @@ async def extract(
             delivery_mode=delivery_mode.value,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
+            extra_params={"backend": backend.value, "validate_cpf": validate_cpf, "auto_rotate": auto_rotate},
         )
 
         # Enqueue
@@ -457,6 +516,8 @@ async def extract(
             "extract_enqueued",
             request_id=job.request_id,
             doc_type=doc_type,
+            backend=backend.value,
+            auto_rotate=auto_rotate,
             delivery_mode=delivery_mode.value,
             filename=arquivo.filename,
             client=client,
@@ -523,11 +584,15 @@ async def extract(
 
 
 @app.post("/process")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def process(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
     extract: Annotated[bool, Query(description="Se deve extrair dados")] = True,
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Confiança mínima")] = 0.5,
+    backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
+    validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
+    auto_rotate: Annotated[bool, Query(description="Corrigir orientação automaticamente")] = True,
     delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
     webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
@@ -537,6 +602,19 @@ async def process(
     Pipeline completo: classifica e extrai dados de uma imagem de documento.
 
     Este é o endpoint principal que executa classificação e extração em sequência.
+
+    ## Backends de Extração
+
+    | Backend | Tempo | Precisão CPF | Uso |
+    |---------|-------|--------------|-----|
+    | **hybrid** | ~15s | ✅ Alta | Padrão. Melhor para documentos com números críticos |
+    | **vlm** | ~5s | ⚠️ Média | Quando velocidade é prioridade |
+    | **ocr** | ~2s | ✅ Alta | Apenas texto bruto, sem estruturação |
+
+    ## Correção de Orientação
+
+    Com `auto_rotate=True` (padrão), imagens rotacionadas são corrigidas automaticamente.
+    Isso adiciona ~4s ao processamento. Use `auto_rotate=False` se a imagem já está correta.
     """
     if queue_service is None:
         raise HTTPException(status_code=503, detail="Queue service not connected")
@@ -566,6 +644,7 @@ async def process(
             delivery_mode=delivery_mode.value,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
+            extra_params={"backend": backend.value, "validate_cpf": validate_cpf, "auto_rotate": auto_rotate},
         )
 
         # Enqueue
@@ -575,6 +654,8 @@ async def process(
             "process_enqueued",
             request_id=job.request_id,
             extract=extract,
+            backend=backend.value,
+            auto_rotate=auto_rotate,
             delivery_mode=delivery_mode.value,
             filename=arquivo.filename,
             client=client,
@@ -644,6 +725,7 @@ OCR_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bm
 
 
 @app.post("/ocr")
+@limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def ocr(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="PDF ou imagem para OCR")],
@@ -794,6 +876,168 @@ async def get_job_status(
         "request_id": request_id,
         "status": "unknown",
         "message": "Job not found or expired",
+    }
+
+
+# ============================================================
+# Warmup endpoint - scales workers before expected load
+# ============================================================
+
+class WarmupRequest(BaseModel):
+    """Request to warmup workers."""
+    workers: int = Field(default=3, ge=1, le=5, description="Number of workers to keep running (max 5 via warmup)")
+    duration_minutes: int = Field(default=30, ge=5, le=120, description="Duration to keep workers up (5-120 min)")
+
+
+class WarmupResponse(BaseModel):
+    """Response from warmup endpoint."""
+    status: str
+    workers_requested: int
+    duration_minutes: int
+    warmup_until: str
+    message: str
+
+
+async def require_warmup_api_key(request: Request) -> None:
+    """Validate warmup-specific API key."""
+    settings = get_settings()
+
+    if not settings.warmup_api_key:
+        raise HTTPException(
+            status_code=503,
+            detail="Warmup endpoint not configured. Set DOC_PIPELINE_WARMUP_API_KEY.",
+        )
+
+    # Check header
+    api_key = request.headers.get("X-Warmup-Key") or request.headers.get("X-API-Key")
+
+    if not api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="Missing X-Warmup-Key header",
+        )
+
+    if api_key != settings.warmup_api_key:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid warmup API key",
+        )
+
+
+@app.post("/warmup", response_model=WarmupResponse)
+async def warmup_workers(
+    request: Request,
+    body: WarmupRequest,
+    _: None = Depends(require_warmup_api_key),
+):
+    """
+    Pre-scale workers before expected high load.
+
+    This endpoint sets a "warmup lock" in Redis that prevents the autoscaler
+    from scaling down workers for the specified duration.
+
+    **Requires dedicated API key** (X-Warmup-Key header).
+
+    Use this when you know a large batch of documents is coming and want
+    to avoid cold-start latency.
+    """
+    if queue_service is None:
+        raise HTTPException(status_code=503, detail="Queue service not connected")
+
+    from datetime import datetime, timezone, timedelta
+
+    # Calculate warmup end time
+    warmup_until = datetime.now(timezone.utc) + timedelta(minutes=body.duration_minutes)
+    warmup_until_ts = int(warmup_until.timestamp())
+
+    # Set warmup lock in Redis
+    # Key: autoscaler:warmup - Value: {"workers": N, "until": timestamp}
+    # TTL: duration_minutes + 1 minute buffer
+    warmup_data = {
+        "workers": body.workers,
+        "until": warmup_until_ts,
+        "requested_at": int(datetime.now(timezone.utc).timestamp()),
+    }
+
+    ttl_seconds = (body.duration_minutes + 1) * 60
+
+    await queue_service._redis.set(
+        "autoscaler:warmup",
+        json.dumps(warmup_data),
+        ex=ttl_seconds,
+    )
+
+    logger.info(
+        "warmup_requested",
+        workers=body.workers,
+        duration_minutes=body.duration_minutes,
+        warmup_until=warmup_until.isoformat(),
+    )
+
+    return WarmupResponse(
+        status="warming_up",
+        workers_requested=body.workers,
+        duration_minutes=body.duration_minutes,
+        warmup_until=warmup_until.isoformat(),
+        message=f"Autoscaler will maintain {body.workers} workers for {body.duration_minutes} minutes.",
+    )
+
+
+@app.delete("/warmup")
+async def cancel_warmup(
+    request: Request,
+    _: None = Depends(require_warmup_api_key),
+):
+    """
+    Cancel warmup and allow normal autoscaling.
+
+    **Requires dedicated API key** (X-Warmup-Key header).
+    """
+    if queue_service is None:
+        raise HTTPException(status_code=503, detail="Queue service not connected")
+
+    deleted = await queue_service._redis.delete("autoscaler:warmup")
+
+    if deleted:
+        logger.info("warmup_cancelled")
+        return {"status": "cancelled", "message": "Warmup cancelled. Normal autoscaling resumed."}
+    else:
+        return {"status": "not_active", "message": "No active warmup to cancel."}
+
+
+@app.get("/warmup/status")
+async def warmup_status(
+    request: Request,
+    _: None = Depends(require_warmup_api_key),
+):
+    """
+    Get current warmup status.
+
+    **Requires dedicated API key** (X-Warmup-Key header).
+    """
+    if queue_service is None:
+        raise HTTPException(status_code=503, detail="Queue service not connected")
+
+    from datetime import datetime, timezone
+
+    warmup_data = await queue_service._redis.get("autoscaler:warmup")
+
+    if not warmup_data:
+        return {
+            "status": "inactive",
+            "message": "No active warmup. Normal autoscaling is active.",
+        }
+
+    data = json.loads(warmup_data)
+    warmup_until = datetime.fromtimestamp(data["until"], tz=timezone.utc)
+    remaining = warmup_until - datetime.now(timezone.utc)
+    remaining_minutes = max(0, int(remaining.total_seconds() / 60))
+
+    return {
+        "status": "active",
+        "workers_requested": data["workers"],
+        "warmup_until": warmup_until.isoformat(),
+        "remaining_minutes": remaining_minutes,
     }
 
 

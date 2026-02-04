@@ -18,7 +18,7 @@ except AttributeError:
 
 from .classifier import ClassifierAdapter
 from .config import ExtractorBackend, Settings, get_settings
-from .extractors import BaseExtractor, GOTOCRExtractor, QwenVLExtractor
+from .extractors import BaseExtractor, QwenVLExtractor
 from .schemas import (
     ClassificationResult,
     DocumentType,
@@ -48,7 +48,7 @@ class DocumentPipeline:
             classifier_model_type: Tipo do modelo (efficientnet_b0, b2, b4)
             classifier_device: Device para o classificador
             classifier_fp8: Usar FP8 no classificador
-            extractor_backend: Backend para extração (qwen-vl ou got-ocr)
+            extractor_backend: Backend para extração (qwen-vl ou easy-ocr)
             extractor_device: Device para o extractor
             settings: Settings customizadas (sobrescreve env vars)
         """
@@ -105,9 +105,17 @@ class DocumentPipeline:
                     model_name=self._settings.extractor_model_qwen,
                     device=self._extractor_device,
                 )
-            elif self._extractor_backend == ExtractorBackend.GOT_OCR:
-                self._extractor = GOTOCRExtractor(
-                    model_name=self._settings.extractor_model_got,
+            elif self._extractor_backend == ExtractorBackend.EASY_OCR:
+                from .extractors.easyocr import EasyOCRExtractor
+                self._extractor = EasyOCRExtractor(
+                    lang=self._settings.ocr_language,
+                    use_gpu=self._settings.ocr_use_gpu,
+                    device=self._extractor_device,
+                )
+            elif self._extractor_backend == ExtractorBackend.HYBRID:
+                from .extractors.hybrid import HybridExtractor
+                self._extractor = HybridExtractor(
+                    model_name=self._settings.extractor_model_qwen,
                     device=self._extractor_device,
                 )
             else:

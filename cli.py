@@ -47,8 +47,8 @@ Exemplos:
   # Pipeline completo (usa models/classifier.pth por padrão)
   python cli.py documento.jpg
 
-  # Usar GOT-OCR2 ao invés de Qwen
-  python cli.py documento.jpg --backend got-ocr
+  # Usar EasyOCR ao invés de Qwen (usa menos VRAM)
+  python cli.py documento.jpg --backend easy-ocr
 
   # Apenas classificar
   python cli.py documento.jpg --no-extraction
@@ -86,8 +86,8 @@ Exemplos:
         "-b",
         type=str,
         default="qwen-vl",
-        choices=["qwen-vl", "got-ocr"],
-        help="Backend para extração de dados",
+        choices=["qwen-vl", "easy-ocr"],
+        help="Backend para extração de dados (easy-ocr usa menos VRAM)",
     )
     parser.add_argument(
         "--classifier-device",

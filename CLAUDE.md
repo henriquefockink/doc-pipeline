@@ -8,7 +8,7 @@ doc-pipeline é um pipeline de processamento de documentos brasileiros (RG e CNH
 
 1. **Classificação + Extração** (Worker DocID)
    - Classifica tipo do documento usando EfficientNet (8 classes)
-   - Extrai dados estruturados usando VLM (Qwen2.5-VL ou GOT-OCR)
+   - Extrai dados estruturados usando VLM (Qwen2.5-VL) ou OCR+regex (EasyOCR)
    - Use case: Processar documentos de identidade para obter dados como nome, CPF, data de nascimento
 
 2. **OCR Genérico** (Worker OCR)
@@ -34,8 +34,8 @@ python cli.py documento.jpg -m models/classifier.pth
 # Run CLI - classification only
 python cli.py documento.jpg -m models/classifier.pth --no-extraction
 
-# Run CLI - with GOT-OCR backend (lower VRAM)
-python cli.py documento.jpg -m models/classifier.pth --backend got-ocr
+# Run CLI - with EasyOCR backend (lower VRAM)
+python cli.py documento.jpg -m models/classifier.pth --backend easy-ocr
 
 # Run API server (uses models/classifier.pth by default)
 python api.py
@@ -59,7 +59,7 @@ doc_pipeline/
 ├── extractors/
 │   ├── base.py         # BaseExtractor abstract class
 │   ├── qwen_vl.py      # QwenVLExtractor (~16GB VRAM)
-│   └── got_ocr.py      # GOTOCRExtractor (~2GB VRAM)
+│   └── easyocr.py      # EasyOCRExtractor (~2GB VRAM)
 └── prompts/
     ├── rg.py           # RG extraction prompt template
     └── cnh.py          # CNH extraction prompt template
@@ -253,7 +253,7 @@ Default model path: `models/classifier.pth`
 
 Key settings (all prefixed with `DOC_PIPELINE_`):
 - `CLASSIFIER_MODEL_TYPE`: efficientnet_b0, efficientnet_b2, efficientnet_b4
-- `EXTRACTOR_BACKEND`: qwen-vl (default) or got-ocr
+- `EXTRACTOR_BACKEND`: qwen-vl (default) or easy-ocr
 - `CLASSIFIER_DEVICE` / `EXTRACTOR_DEVICE`: cuda:N or cpu (supports multi-GPU)
 - `API_KEY`: Optional API key for authentication (if set, requires `X-API-Key` header)
 
@@ -278,11 +278,41 @@ docker compose --profile monitoring up -d
 open http://localhost:3000  # admin:admin (ou GRAFANA_ADMIN_PASSWORD)
 ```
 
-### Grafana de Produção
+### Grafana e Prometheus de Produção
 
 O Grafana de produção está em:
 - **URL**: https://speech-analytics-grafana-dev.paneas.com
 - **Credenciais**: Configuradas em `.env` (`GRAFANA_URL`, `GRAFANA_TOKEN`)
+
+**IMPORTANTE**: O Prometheus de produção roda **fora desta máquina** (não é local).
+- Ele scrapea as métricas via rede (API na porta 9000, workers nas portas 9010+)
+- O arquivo `prometheus.yml` local é apenas referência/backup
+- As métricas do autoscaler são expostas via `/metrics` da API (que lê `/tmp/doc_pipeline_autoscaler.prom`)
+
+### Autoscaler (Container)
+
+O autoscaler roda como **container Docker** junto com o stack:
+
+```bash
+# Status
+docker compose ps autoscaler
+
+# Logs
+docker compose logs -f autoscaler
+
+# Reiniciar (após alterar scripts/autoscale.sh)
+docker compose build autoscaler && docker compose up -d autoscaler
+```
+
+**Configuração** (via environment no `docker-compose.yml`):
+- `MIN_WORKERS=1`: mínimo de workers
+- `MAX_WORKERS=3`: limite normal de scaling
+- `SCALE_UP_THRESHOLD=5`: queue depth para escalar
+- `SCALE_DOWN_DELAY=120`: segundos antes de desescalar
+- Warmup pode solicitar até 5 workers via API `/warmup`
+
+**Workers disponíveis** (definidos em `scripts/autoscale.sh`):
+- `worker-docid-1` a `worker-docid-5`
 
 ### Estrutura de Pastas no Grafana
 

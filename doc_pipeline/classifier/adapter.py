@@ -1,5 +1,8 @@
 """
-Adapter para o classificador do doc-classifier.
+Adapter para o classificador de documentos.
+
+O código de inferência foi copiado do repo doc-classifier para evitar
+dependência externa. Ver docs/DEPENDENCIA_DOC_CLASSIFIER.md para contexto.
 """
 
 from pathlib import Path
@@ -10,11 +13,11 @@ from PIL import Image
 from ..schemas import ClassificationResult, DocumentType
 
 if TYPE_CHECKING:
-    from classificar import ClassificadorDocumentos
+    from .classificar import ClassificadorDocumentos
 
 
 class ClassifierAdapter:
-    """Wrapper para ClassificadorDocumentos do doc-classifier."""
+    """Wrapper para ClassificadorDocumentos."""
 
     def __init__(
         self,
@@ -32,8 +35,7 @@ class ClassifierAdapter:
             device: Device para inferência (cuda:0, cpu, etc)
             fp8: Usar quantização FP8
         """
-        # Import dinâmico para evitar problemas se doc-classifier não estiver instalado
-        from classificar import ClassificadorDocumentos
+        from .classificar import ClassificadorDocumentos
 
         self._classifier = ClassificadorDocumentos(
             modelo_path=str(model_path),

@@ -17,8 +17,14 @@
 #   - worker-docid-1 (porta 9010) - sempre ativo
 #   - worker-docid-2 (porta 9012) - sob demanda
 #   - worker-docid-3 (porta 9014) - sob demanda
+#   - worker-docid-4 (porta 9016) - sob demanda (warmup only)
+#   - worker-docid-5 (porta 9018) - sob demanda (warmup only)
 
-set -e
+# NOTE: Não usar "set -e" pois ((count++)) retorna exit code 1 quando count=0
+# e isso mata o script silenciosamente
+
+# Trap para logar erros inesperados
+trap 'log "ERROR: Script died unexpectedly at line $LINENO"' ERR
 
 # Configuração
 REDIS_HOST="${REDIS_HOST:-localhost}"
@@ -32,7 +38,7 @@ QUEUE_NAME="queue:doc:documents"
 METRICS_FILE="${METRICS_FILE:-/tmp/doc_pipeline_autoscaler.prom}"
 
 # Workers disponíveis (em ordem)
-WORKERS=("worker-docid-1" "worker-docid-2" "worker-docid-3")
+WORKERS=("worker-docid-1" "worker-docid-2" "worker-docid-3" "worker-docid-4" "worker-docid-5")
 
 # Estado
 EMPTY_SINCE=0
@@ -54,6 +60,28 @@ get_queue_depth() {
     timeout 5 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" LLEN "$QUEUE_NAME" 2>/dev/null || echo "0"
 }
 
+# Verifica se há warmup ativo no Redis
+# Retorna: "workers:N" se ativo, "inactive" se não
+get_warmup_status() {
+    local warmup_data
+    warmup_data=$(timeout 5 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" GET "autoscaler:warmup" 2>/dev/null)
+
+    if [ -z "$warmup_data" ] || [ "$warmup_data" = "(nil)" ]; then
+        echo "inactive"
+        return
+    fi
+
+    # Parse JSON to get workers count (handles optional spaces)
+    local workers
+    workers=$(echo "$warmup_data" | grep -oE '"workers":\s*[0-9]+' | grep -oE '[0-9]+')
+
+    if [ -n "$workers" ]; then
+        echo "workers:$workers"
+    else
+        echo "inactive"
+    fi
+}
+
 # Retorna lista de workers rodando
 get_running_workers() {
     local running=""
@@ -70,7 +98,7 @@ count_running_workers() {
     local count=0
     for worker in "${WORKERS[@]}"; do
         if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
-            ((count++))
+            count=$((count + 1))
         fi
     done
     echo "$count"
@@ -81,7 +109,12 @@ start_next_worker() {
     for worker in "${WORKERS[@]}"; do
         if ! timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             log "${GREEN}↑ Starting $worker${NC}"
-            timeout 60 docker compose up -d "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout starting $worker${NC}"
+            # Usa start se container existe, senão cria com up
+            if timeout 10 docker compose ps -a --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+                timeout 60 docker compose start "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout starting $worker${NC}"
+            else
+                timeout 60 docker compose up -d "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout creating $worker${NC}"
+            fi
             SCALE_UP_TOTAL=$((SCALE_UP_TOTAL + 1))
             return 0
         fi
@@ -97,6 +130,7 @@ stop_last_worker() {
         if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             log "${RED}↓ Stopping $worker${NC}"
             timeout 60 docker compose stop "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout stopping $worker${NC}"
+            # Container fica parado mas pronto para próximo start (sem rm)
             SCALE_DOWN_TOTAL=$((SCALE_DOWN_TOTAL + 1))
             return 0
         fi
@@ -161,11 +195,37 @@ check_and_scale() {
     local now=$(date +%s)
     local empty_seconds=0
 
+    # Check warmup status
+    local warmup_status=$(get_warmup_status)
+    local warmup_workers=0
+    local warmup_active=false
+
+    if [[ "$warmup_status" == workers:* ]]; then
+        warmup_workers=${warmup_status#workers:}
+        warmup_active=true
+    fi
+
     # Log status
     local running=$(get_running_workers)
-    log "Queue: ${BLUE}$queue_depth${NC} | Workers: ${BLUE}$current_workers/$MAX_WORKERS${NC} |$running"
+    if [ "$warmup_active" = true ]; then
+        log "Queue: ${BLUE}$queue_depth${NC} | Workers: ${BLUE}$current_workers/$MAX_WORKERS${NC} | ${YELLOW}WARMUP($warmup_workers)${NC} |$running"
+    else
+        log "Queue: ${BLUE}$queue_depth${NC} | Workers: ${BLUE}$current_workers/$MAX_WORKERS${NC} |$running"
+    fi
 
-    # Lógica de scale up
+    # Warmup mode: scale up to requested workers
+    if [ "$warmup_active" = true ] && [ "$current_workers" -lt "$warmup_workers" ]; then
+        log "${GREEN}↑ Warmup active, scaling to $warmup_workers workers${NC}"
+        while [ "$current_workers" -lt "$warmup_workers" ]; do
+            start_next_worker
+            current_workers=$((current_workers + 1))
+        done
+        EMPTY_SINCE=0
+        export_metrics "$queue_depth" "$current_workers" 0
+        return
+    fi
+
+    # Lógica de scale up (queue-based)
     if [ "$queue_depth" -ge "$SCALE_UP_THRESHOLD" ]; then
         EMPTY_SINCE=0
 
@@ -180,15 +240,26 @@ check_and_scale() {
 
     # Lógica de scale down
     if [ "$queue_depth" -eq 0 ]; then
+        # Determine minimum workers (normal or warmup)
+        local effective_min=$MIN_WORKERS
+        if [ "$warmup_active" = true ] && [ "$warmup_workers" -gt "$MIN_WORKERS" ]; then
+            effective_min=$warmup_workers
+        fi
+
         if [ "$EMPTY_SINCE" -eq 0 ]; then
             EMPTY_SINCE=$now
-            log "Queue empty, starting cooldown (${SCALE_DOWN_DELAY}s)"
+            if [ "$warmup_active" = true ]; then
+                log "Queue empty, warmup active (min $warmup_workers workers)"
+            else
+                log "Queue empty, starting cooldown (${SCALE_DOWN_DELAY}s)"
+            fi
         fi
 
         empty_seconds=$((now - EMPTY_SINCE))
 
-        if [ "$empty_seconds" -ge "$SCALE_DOWN_DELAY" ] && [ "$current_workers" -gt "$MIN_WORKERS" ]; then
-            log "${RED}↓ Queue empty for ${empty_seconds}s, scaling down${NC}"
+        # Only scale down if: cooldown passed AND not in warmup mode (or below warmup target)
+        if [ "$empty_seconds" -ge "$SCALE_DOWN_DELAY" ] && [ "$current_workers" -gt "$effective_min" ]; then
+            log "${RED}↓ Queue empty for ${empty_seconds}s, scaling down (min: $effective_min)${NC}"
             stop_last_worker
             current_workers=$((current_workers - 1))
             EMPTY_SINCE=$now  # Reset timer
@@ -202,7 +273,13 @@ check_and_scale() {
 }
 
 # Main
-cd "$(dirname "$0")/.."
+# Se estiver em container, o docker-compose.yml está no /app
+# Se estiver local, vai para o diretório pai do script
+if [ -f /app/docker-compose.yml ]; then
+    cd /app
+else
+    cd "$(dirname "$0")/.."
+fi
 
 log "=== Doc Pipeline Auto-Scaler ==="
 log "Config: MIN=$MIN_WORKERS MAX=$MAX_WORKERS THRESHOLD=$SCALE_UP_THRESHOLD DELAY=${SCALE_DOWN_DELAY}s"

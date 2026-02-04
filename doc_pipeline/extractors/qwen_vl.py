@@ -1,5 +1,5 @@
 """
-Extractor usando Qwen2.5-VL para extração contextualizada de dados.
+Extractor usando Qwen3-VL para extração contextualizada de dados.
 """
 
 import json
@@ -14,13 +14,13 @@ from .base import BaseExtractor
 
 
 class QwenVLExtractor(BaseExtractor):
-    """Extractor usando Qwen2.5-VL-7B-Instruct."""
+    """Extractor usando Qwen3-VL-8B-Instruct."""
 
     backend_name = "qwen-vl"
 
     def __init__(
         self,
-        model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct",
+        model_name: str = "Qwen/Qwen3-VL-8B-Instruct",
         device: str = "cuda:0",
         min_pixels: int = 256 * 28 * 28,
         max_pixels: int = 1280 * 28 * 28,
@@ -42,19 +42,30 @@ class QwenVLExtractor(BaseExtractor):
         self._model = None
         self._processor = None
 
+    def _get_model_class(self):
+        """Get the appropriate model class based on model name."""
+        if "Qwen3-VL" in self.model_name:
+            from transformers import Qwen3VLForConditionalGeneration
+            return Qwen3VLForConditionalGeneration
+        else:
+            from transformers import Qwen2_5_VLForConditionalGeneration
+            return Qwen2_5_VLForConditionalGeneration
+
     def load_model(self) -> None:
         """Carrega o modelo Qwen-VL."""
         if self._model is not None:
             return
 
-        from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
+        from transformers import AutoProcessor
         import torch
 
         print(f"Carregando modelo {self.model_name}...")
 
+        ModelClass = self._get_model_class()
+
         # Tenta usar flash_attention_2, senão usa sdpa (PyTorch nativo)
         try:
-            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self._model = ModelClass.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
                 device_map=self.device,
@@ -62,7 +73,7 @@ class QwenVLExtractor(BaseExtractor):
             )
         except Exception:
             print("Flash Attention 2 não disponível, usando SDPA...")
-            self._model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            self._model = ModelClass.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
                 device_map=self.device,

@@ -247,27 +247,27 @@ FOLDER_UID="$WORKERS_ALERTS_UID"
 # DocID Worker Alerts
 # ============================================================
 
-# 16. DocID Worker Down
+# 16. DocID Worker Down (all workers down)
 create_alert "DocID Worker Down" '[
-    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"up{job=\"doc-pipeline-worker-docid\"}"}},
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1) or vector(0)"}},
     {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"lt","params":[1]}}]}}
-]' "B" "2m" "critical" "DocID Worker is down" "The classification worker has been unreachable for more than 2 minutes" '"worker":"docid"'
+]' "B" "2m" "critical" "DocID Worker is down" "All classification workers are unreachable for more than 2 minutes" '"worker":"docid"'
 
 # 17. DocID High Error Rate
 create_alert "DocID High Error Rate" '[
-    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-docid\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-docid\"}[5m]))"}},
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"sum(rate(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\"}[5m]))"}},
     {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[0.1]}}]}}
 ]' "B" "5m" "warning" "High classification worker error rate" "Classification worker error rate above 10%" '"worker":"docid"'
 
 # 18. DocID High Latency
 create_alert "DocID High Latency" '[
-    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.95,sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-worker-docid\"}[5m])) by (le))"}},
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"histogram_quantile(0.95,sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le))"}},
     {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[30]}}]}}
 ]' "B" "5m" "warning" "Classification processing time is high" "P95 processing time above 30 seconds" '"worker":"docid"'
 
 # 19. DocID Queue Backup
 create_alert "DocID Queue Backup" '[
-    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"doc_pipeline_queue_depth{job=\"doc-pipeline-worker-docid\"}"}},
+    {"refId":"A","relativeTimeRange":{"from":300,"to":0},"datasourceUid":"'$DS_UID'","model":{"expr":"max(doc_pipeline_queue_depth{job=~\"doc-pipeline-worker-docid.*\"})"}},
     {"refId":"B","datasourceUid":"__expr__","model":{"type":"threshold","expression":"A","conditions":[{"evaluator":{"type":"gt","params":[10]}}]}}
 ]' "B" "5m" "warning" "Classification queue is backing up" "Queue depth above 10 jobs" '"worker":"docid","component":"queue"'
 

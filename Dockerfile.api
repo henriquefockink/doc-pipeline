@@ -8,10 +8,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy requirements (not used directly - deps are hardcoded below for slim image)
 COPY requirements.txt .
 
-# Install Python dependencies (excluding torch/torchvision for API-only)
+# Install Python dependencies (hardcoded for API-only, no torch/torchvision)
+# NOTE: Se adicionar nova dependência, atualizar AQUI e no requirements.txt
 RUN pip install --no-cache-dir \
     fastapi>=0.109.0 \
     uvicorn>=0.27.0 \
@@ -25,7 +26,8 @@ RUN pip install --no-cache-dir \
     pillow>=10.0.0 \
     pillow-heif>=0.16.0 \
     redis[hiredis]>=5.0.0 \
-    httpx>=0.27.0
+    httpx>=0.27.0 \
+    slowapi>=0.1.9
 
 # Copy application code
 COPY api.py .
