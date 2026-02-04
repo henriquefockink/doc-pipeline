@@ -58,6 +58,28 @@ get_queue_depth() {
     timeout 5 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" LLEN "$QUEUE_NAME" 2>/dev/null || echo "0"
 }
 
+# Verifica se há warmup ativo no Redis
+# Retorna: "workers:N" se ativo, "inactive" se não
+get_warmup_status() {
+    local warmup_data
+    warmup_data=$(timeout 5 redis-cli -h "$REDIS_HOST" -p "$REDIS_PORT" GET "autoscaler:warmup" 2>/dev/null)
+
+    if [ -z "$warmup_data" ] || [ "$warmup_data" = "(nil)" ]; then
+        echo "inactive"
+        return
+    fi
+
+    # Parse JSON to get workers count (handles optional spaces)
+    local workers
+    workers=$(echo "$warmup_data" | grep -oE '"workers":\s*[0-9]+' | grep -oE '[0-9]+')
+
+    if [ -n "$workers" ]; then
+        echo "workers:$workers"
+    else
+        echo "inactive"
+    fi
+}
+
 # Retorna lista de workers rodando
 get_running_workers() {
     local running=""
@@ -165,11 +187,37 @@ check_and_scale() {
     local now=$(date +%s)
     local empty_seconds=0
 
+    # Check warmup status
+    local warmup_status=$(get_warmup_status)
+    local warmup_workers=0
+    local warmup_active=false
+
+    if [[ "$warmup_status" == workers:* ]]; then
+        warmup_workers=${warmup_status#workers:}
+        warmup_active=true
+    fi
+
     # Log status
     local running=$(get_running_workers)
-    log "Queue: ${BLUE}$queue_depth${NC} | Workers: ${BLUE}$current_workers/$MAX_WORKERS${NC} |$running"
+    if [ "$warmup_active" = true ]; then
+        log "Queue: ${BLUE}$queue_depth${NC} | Workers: ${BLUE}$current_workers/$MAX_WORKERS${NC} | ${YELLOW}WARMUP($warmup_workers)${NC} |$running"
+    else
+        log "Queue: ${BLUE}$queue_depth${NC} | Workers: ${BLUE}$current_workers/$MAX_WORKERS${NC} |$running"
+    fi
 
-    # Lógica de scale up
+    # Warmup mode: scale up to requested workers
+    if [ "$warmup_active" = true ] && [ "$current_workers" -lt "$warmup_workers" ]; then
+        log "${GREEN}↑ Warmup active, scaling to $warmup_workers workers${NC}"
+        while [ "$current_workers" -lt "$warmup_workers" ]; do
+            start_next_worker
+            current_workers=$((current_workers + 1))
+        done
+        EMPTY_SINCE=0
+        export_metrics "$queue_depth" "$current_workers" 0
+        return
+    fi
+
+    # Lógica de scale up (queue-based)
     if [ "$queue_depth" -ge "$SCALE_UP_THRESHOLD" ]; then
         EMPTY_SINCE=0
 
@@ -184,15 +232,26 @@ check_and_scale() {
 
     # Lógica de scale down
     if [ "$queue_depth" -eq 0 ]; then
+        # Determine minimum workers (normal or warmup)
+        local effective_min=$MIN_WORKERS
+        if [ "$warmup_active" = true ] && [ "$warmup_workers" -gt "$MIN_WORKERS" ]; then
+            effective_min=$warmup_workers
+        fi
+
         if [ "$EMPTY_SINCE" -eq 0 ]; then
             EMPTY_SINCE=$now
-            log "Queue empty, starting cooldown (${SCALE_DOWN_DELAY}s)"
+            if [ "$warmup_active" = true ]; then
+                log "Queue empty, warmup active (min $warmup_workers workers)"
+            else
+                log "Queue empty, starting cooldown (${SCALE_DOWN_DELAY}s)"
+            fi
         fi
 
         empty_seconds=$((now - EMPTY_SINCE))
 
-        if [ "$empty_seconds" -ge "$SCALE_DOWN_DELAY" ] && [ "$current_workers" -gt "$MIN_WORKERS" ]; then
-            log "${RED}↓ Queue empty for ${empty_seconds}s, scaling down${NC}"
+        # Only scale down if: cooldown passed AND not in warmup mode (or below warmup target)
+        if [ "$empty_seconds" -ge "$SCALE_DOWN_DELAY" ] && [ "$current_workers" -gt "$effective_min" ]; then
+            log "${RED}↓ Queue empty for ${empty_seconds}s, scaling down (min: $effective_min)${NC}"
             stop_last_worker
             current_workers=$((current_workers - 1))
             EMPTY_SINCE=$now  # Reset timer

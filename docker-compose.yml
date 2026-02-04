@@ -27,6 +27,8 @@ services:
       # Auth settings (optional)
       - DOC_PIPELINE_API_KEY=${DOC_PIPELINE_API_KEY:-}
       - DOC_PIPELINE_DATABASE_URL=${DOC_PIPELINE_DATABASE_URL:-}
+      # Warmup endpoint API key (optional)
+      - DOC_PIPELINE_WARMUP_API_KEY=${DOC_PIPELINE_WARMUP_API_KEY:-}
     volumes:
       # Shared temp directory for images between API and worker
       - temp-images:/tmp/doc-pipeline

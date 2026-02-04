@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     api_key: str | None = Field(default=None, description="API key master (env)")
     api_keys: str | None = Field(default=None, description="Lista de API keys master separadas por vírgula")
     database_url: str | None = Field(default=None, description="PostgreSQL URL para API keys dinâmicas")
+    warmup_api_key: str | None = Field(default=None, description="API key dedicada para endpoint /warmup")
 
     @property
     def api_keys_list(self) -> list[str]:
