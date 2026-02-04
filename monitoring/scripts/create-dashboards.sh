@@ -139,7 +139,7 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
 
     {"id": 7, "type": "gauge", "title": "Workers", "gridPos": {"h": 4, "w": 3, "x": 18, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
-      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "min": 0, "max": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 2}]}, "unit": "none"}},
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "min": 0, "max": 3, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "unit": "none"}},
       "options": {"orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"]}, "showThresholdLabels": false, "showThresholdMarkers": true},
       "targets": [{"expr": "count(up{job=~\"doc-pipeline-worker-docid.*\"} == 1)", "legendFormat": "Workers"}]},
 
