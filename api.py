@@ -885,7 +885,7 @@ async def get_job_status(
 
 class WarmupRequest(BaseModel):
     """Request to warmup workers."""
-    workers: int = Field(default=3, ge=1, le=3, description="Number of workers to keep running")
+    workers: int = Field(default=3, ge=1, le=5, description="Number of workers to keep running (max 5 via warmup)")
     duration_minutes: int = Field(default=30, ge=5, le=120, description="Duration to keep workers up (5-120 min)")
 
 

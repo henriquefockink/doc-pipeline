@@ -278,11 +278,41 @@ docker compose --profile monitoring up -d
 open http://localhost:3000  # admin:admin (ou GRAFANA_ADMIN_PASSWORD)
 ```
 
-### Grafana de Produção
+### Grafana e Prometheus de Produção
 
 O Grafana de produção está em:
 - **URL**: https://speech-analytics-grafana-dev.paneas.com
 - **Credenciais**: Configuradas em `.env` (`GRAFANA_URL`, `GRAFANA_TOKEN`)
+
+**IMPORTANTE**: O Prometheus de produção roda **fora desta máquina** (não é local).
+- Ele scrapea as métricas via rede (API na porta 9000, workers nas portas 9010+)
+- O arquivo `prometheus.yml` local é apenas referência/backup
+- As métricas do autoscaler são expostas via `/metrics` da API (que lê `/tmp/doc_pipeline_autoscaler.prom`)
+
+### Autoscaler (Container)
+
+O autoscaler roda como **container Docker** junto com o stack:
+
+```bash
+# Status
+docker compose ps autoscaler
+
+# Logs
+docker compose logs -f autoscaler
+
+# Reiniciar (após alterar scripts/autoscale.sh)
+docker compose build autoscaler && docker compose up -d autoscaler
+```
+
+**Configuração** (via environment no `docker-compose.yml`):
+- `MIN_WORKERS=1`: mínimo de workers
+- `MAX_WORKERS=3`: limite normal de scaling
+- `SCALE_UP_THRESHOLD=5`: queue depth para escalar
+- `SCALE_DOWN_DELAY=120`: segundos antes de desescalar
+- Warmup pode solicitar até 5 workers via API `/warmup`
+
+**Workers disponíveis** (definidos em `scripts/autoscale.sh`):
+- `worker-docid-1` a `worker-docid-5`
 
 ### Estrutura de Pastas no Grafana
 

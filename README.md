@@ -51,6 +51,27 @@ O token do Hugging Face é **obrigatório** para download dos modelos VLM. Sem e
 
 ## Quick Start
 
+### Docker (Recomendado)
+
+```bash
+# Subir todos os serviços
+docker compose up -d
+
+# Ver logs
+docker compose logs -f
+
+# Parar
+docker compose down
+```
+
+Serviços disponíveis:
+- **API**: http://localhost:9000
+- **Worker DocID**: Classificação e extração de RG/CNH
+- **Worker OCR**: OCR genérico de PDFs/imagens
+- **Autoscaler**: Escala workers automaticamente
+
+### Local (Desenvolvimento)
+
 ```bash
 # Ativar venv
 source venv/bin/activate
@@ -59,6 +80,88 @@ source venv/bin/activate
 python api.py
 
 # A API estará disponível em http://localhost:8001
+```
+
+## Autoscaler
+
+O autoscaler ajusta automaticamente o número de workers baseado na profundidade da fila.
+
+### Configuração
+
+| Variável | Padrão | Descrição |
+|----------|--------|-----------|
+| `MIN_WORKERS` | 1 | Mínimo de workers ativos |
+| `MAX_WORKERS` | 3 | Máximo de workers (scaling normal) |
+| `SCALE_UP_THRESHOLD` | 5 | Queue depth para escalar |
+| `SCALE_DOWN_DELAY` | 120 | Segundos com fila vazia antes de desescalar |
+
+### Comportamento
+
+```
+Queue depth ≥ 5  →  Scale up (até MAX_WORKERS)
+Queue depth = 0  →  Aguarda 120s → Scale down (até MIN_WORKERS)
+```
+
+### Workers Disponíveis
+
+| Worker | Porta | Descrição |
+|--------|-------|-----------|
+| worker-docid-1 | 9010 | Sempre ativo |
+| worker-docid-2 | 9012 | Sob demanda |
+| worker-docid-3 | 9014 | Sob demanda |
+| worker-docid-4 | 9016 | Sob demanda (warmup) |
+| worker-docid-5 | 9018 | Sob demanda (warmup) |
+
+Workers 2-5 são pré-criados e ficam parados (0 recursos). O autoscaler faz `start/stop` para escalar rapidamente.
+
+## Warmup API
+
+Permite escalar workers **antes** de uma carga esperada (ex: campanha de marketing).
+
+### Endpoints
+
+| Método | Endpoint | Descrição |
+|--------|----------|-----------|
+| POST | `/warmup` | Ativa warmup (escala workers) |
+| GET | `/warmup/status` | Status do warmup |
+| DELETE | `/warmup` | Cancela warmup |
+
+Requer header `X-Warmup-Key` com a chave configurada em `DOC_PIPELINE_WARMUP_API_KEY`.
+
+### Exemplo
+
+```bash
+# Ativar warmup: 5 workers por 30 minutos
+curl -X POST http://localhost:9000/warmup \
+  -H "X-Warmup-Key: $WARMUP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"workers": 5, "duration_minutes": 30}'
+
+# Verificar status
+curl http://localhost:9000/warmup/status \
+  -H "X-Warmup-Key: $WARMUP_KEY"
+
+# Cancelar warmup
+curl -X DELETE http://localhost:9000/warmup \
+  -H "X-Warmup-Key: $WARMUP_KEY"
+```
+
+### Parâmetros
+
+| Parâmetro | Padrão | Range | Descrição |
+|-----------|--------|-------|-----------|
+| `workers` | 3 | 1-5 | Número de workers a manter |
+| `duration_minutes` | 30 | 5-120 | Duração do warmup |
+
+### Comportamento
+
+1. **Warmup ativo**: Autoscaler mantém mínimo de N workers (mesmo com fila vazia)
+2. **Warmup expira**: Volta ao comportamento normal (desescala até MIN_WORKERS)
+3. **Cancelamento**: Mesmo que expiração
+
+```
+Normal:     MIN_WORKERS (1) ←→ MAX_WORKERS (3)  baseado na fila
+Com warmup: WARMUP_WORKERS (5) fixo            até expirar
 ```
 
 ### Expor via ngrok (acesso externo)
@@ -119,11 +222,16 @@ DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/outro/caminho/modelo.pth python api.py
 
 | Método | Endpoint | Descrição | Auth |
 |--------|----------|-----------|:----:|
-| POST | `/process` | Pipeline completo (classificação + extração) | Sim |
-| POST | `/classify` | Apenas classificação | Sim |
-| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) | Sim |
+| POST | `/process` | Pipeline completo (classificação + extração) | API Key |
+| POST | `/classify` | Apenas classificação | API Key |
+| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) | API Key |
+| POST | `/ocr` | OCR genérico de PDF/imagem | API Key |
 | GET | `/health` | Status da API | Não |
-| GET | `/classes` | Lista classes suportadas | Sim |
+| GET | `/metrics` | Métricas Prometheus | Não |
+| GET | `/classes` | Lista classes suportadas | API Key |
+| POST | `/warmup` | Ativa warmup de workers | Warmup Key |
+| GET | `/warmup/status` | Status do warmup | Warmup Key |
+| DELETE | `/warmup` | Cancela warmup | Warmup Key |
 
 #### Autenticação
 
@@ -303,7 +411,6 @@ doc-pipeline/
 - PyTorch 2.0+
 - transformers 4.49+
 - python-dotenv 1.0+
-- [doc-classifier](https://github.com/henriquefockink/doc-classifier) (dependência local)
 
 ### Opcionais
 
@@ -352,6 +459,36 @@ pre-commit run --all-files
 | B | flake8-bugbear |
 | UP | pyupgrade |
 | SIM | flake8-simplify |
+
+## Monitoramento
+
+### Métricas Prometheus
+
+A API expõe métricas em `/metrics`:
+
+```bash
+curl http://localhost:9000/metrics
+```
+
+Métricas principais:
+- `doc_pipeline_jobs_processed_total` - Jobs processados
+- `doc_pipeline_worker_processing_seconds` - Tempo de processamento
+- `doc_pipeline_autoscaler_workers_current` - Workers ativos
+- `doc_pipeline_autoscaler_queue_depth` - Profundidade da fila
+
+### Grafana
+
+Dashboards disponíveis:
+- **Doc Pipeline Overview** - Métricas gerais, autoscaler, queue
+- **Worker DocID** - Métricas específicas do worker de documentos
+- **Worker OCR** - Métricas do worker de OCR
+
+Para criar/atualizar dashboards no Grafana de produção:
+
+```bash
+./monitoring/scripts/create-dashboards.sh
+./monitoring/scripts/create-alerts.sh
+```
 
 ## Licença
 

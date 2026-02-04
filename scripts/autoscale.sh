@@ -17,6 +17,8 @@
 #   - worker-docid-1 (porta 9010) - sempre ativo
 #   - worker-docid-2 (porta 9012) - sob demanda
 #   - worker-docid-3 (porta 9014) - sob demanda
+#   - worker-docid-4 (porta 9016) - sob demanda (warmup only)
+#   - worker-docid-5 (porta 9018) - sob demanda (warmup only)
 
 # NOTE: Não usar "set -e" pois ((count++)) retorna exit code 1 quando count=0
 # e isso mata o script silenciosamente
@@ -36,7 +38,7 @@ QUEUE_NAME="queue:doc:documents"
 METRICS_FILE="${METRICS_FILE:-/tmp/doc_pipeline_autoscaler.prom}"
 
 # Workers disponíveis (em ordem)
-WORKERS=("worker-docid-1" "worker-docid-2" "worker-docid-3")
+WORKERS=("worker-docid-1" "worker-docid-2" "worker-docid-3" "worker-docid-4" "worker-docid-5")
 
 # Estado
 EMPTY_SINCE=0
@@ -107,7 +109,12 @@ start_next_worker() {
     for worker in "${WORKERS[@]}"; do
         if ! timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             log "${GREEN}↑ Starting $worker${NC}"
-            timeout 60 docker compose up -d "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout starting $worker${NC}"
+            # Usa start se container existe, senão cria com up
+            if timeout 10 docker compose ps -a --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+                timeout 60 docker compose start "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout starting $worker${NC}"
+            else
+                timeout 60 docker compose up -d "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout creating $worker${NC}"
+            fi
             SCALE_UP_TOTAL=$((SCALE_UP_TOTAL + 1))
             return 0
         fi
@@ -123,6 +130,7 @@ stop_last_worker() {
         if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             log "${RED}↓ Stopping $worker${NC}"
             timeout 60 docker compose stop "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout stopping $worker${NC}"
+            # Container fica parado mas pronto para próximo start (sem rm)
             SCALE_DOWN_TOTAL=$((SCALE_DOWN_TOTAL + 1))
             return 0
         fi
@@ -265,7 +273,13 @@ check_and_scale() {
 }
 
 # Main
-cd "$(dirname "$0")/.."
+# Se estiver em container, o docker-compose.yml está no /app
+# Se estiver local, vai para o diretório pai do script
+if [ -f /app/docker-compose.yml ]; then
+    cd /app
+else
+    cd "$(dirname "$0")/.."
+fi
 
 log "=== Doc Pipeline Auto-Scaler ==="
 log "Config: MIN=$MIN_WORKERS MAX=$MAX_WORKERS THRESHOLD=$SCALE_UP_THRESHOLD DELAY=${SCALE_DOWN_DELAY}s"

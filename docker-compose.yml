@@ -24,6 +24,12 @@ services:
       - DOC_PIPELINE_API_PORT=9000
       - DOC_PIPELINE_LOG_JSON=true
       - DOC_PIPELINE_LOG_LEVEL=INFO
+      # Redis pool settings
+      - DOC_PIPELINE_REDIS_MAX_CONNECTIONS=${DOC_PIPELINE_REDIS_MAX_CONNECTIONS:-100}
+      # Rate limiting
+      - DOC_PIPELINE_RATE_LIMIT_ENABLED=${DOC_PIPELINE_RATE_LIMIT_ENABLED:-true}
+      - DOC_PIPELINE_RATE_LIMIT_REQUESTS=${DOC_PIPELINE_RATE_LIMIT_REQUESTS:-30}
+      - DOC_PIPELINE_RATE_LIMIT_WINDOW=${DOC_PIPELINE_RATE_LIMIT_WINDOW:-second}
       # Auth settings (optional)
       - DOC_PIPELINE_API_KEY=${DOC_PIPELINE_API_KEY:-}
       - DOC_PIPELINE_DATABASE_URL=${DOC_PIPELINE_DATABASE_URL:-}
@@ -32,8 +38,8 @@ services:
     volumes:
       # Shared temp directory for images between API and worker
       - temp-images:/tmp/doc-pipeline
-      # Autoscaler metrics (read-only)
-      - /tmp/doc_pipeline_autoscaler.prom:/tmp/doc_pipeline_autoscaler.prom:ro
+      # Autoscaler metrics (read-only, from shared volume)
+      - autoscaler-metrics:/tmp/autoscaler-metrics:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -67,7 +73,6 @@ services:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
       - ./models:/app/models:ro
-      - ../doc-classifier:/app/doc-classifier:ro
     deploy:
       resources:
         reservations:
@@ -109,7 +114,6 @@ services:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
       - ./models:/app/models:ro
-      - ../doc-classifier:/app/doc-classifier:ro
     deploy:
       resources:
         reservations:
@@ -152,7 +156,90 @@ services:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
       - ./models:/app/models:ro
-      - ../doc-classifier:/app/doc-classifier:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    profiles:
+      - scale
+
+  # Worker DocID 4 - inicia sob demanda pelo autoscaler
+  worker-docid-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker-docid
+    container_name: doc-pipeline-worker-docid-4
+    ports:
+      - "9016:9010"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_WARMUP_ON_START=true
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
+      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
+      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
+      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
+      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - temp-images:/tmp/doc-pipeline
+      - model-cache:/root/.cache/huggingface
+      - ./models:/app/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    profiles:
+      - scale
+
+  # Worker DocID 5 - inicia sob demanda pelo autoscaler
+  worker-docid-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker-docid
+    container_name: doc-pipeline-worker-docid-5
+    ports:
+      - "9018:9010"
+    environment:
+      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
+      - DOC_PIPELINE_WARMUP_ON_START=true
+      - DOC_PIPELINE_LOG_JSON=true
+      - DOC_PIPELINE_LOG_LEVEL=INFO
+      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
+      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
+      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
+      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
+      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
+      - HF_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - temp-images:/tmp/doc-pipeline
+      - model-cache:/root/.cache/huggingface
+      - ./models:/app/models:ro
     deploy:
       resources:
         reservations:
@@ -210,6 +297,35 @@ services:
       start_period: 60s
     restart: unless-stopped
 
+  # Autoscaler - scales workers based on queue depth
+  autoscaler:
+    build:
+      context: .
+      dockerfile: Dockerfile.autoscaler
+    environment:
+      - MIN_WORKERS=${MIN_WORKERS:-1}
+      - MAX_WORKERS=${MAX_WORKERS:-3}
+      - SCALE_UP_THRESHOLD=${SCALE_UP_THRESHOLD:-5}
+      - SCALE_DOWN_DELAY=${SCALE_DOWN_DELAY:-120}
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-10}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - METRICS_FILE=/metrics/doc_pipeline_autoscaler.prom
+      # Docker compose project name (must match)
+      - COMPOSE_PROJECT_NAME=doc-pipeline
+    volumes:
+      # Docker socket to control containers
+      - /var/run/docker.sock:/var/run/docker.sock
+      # Docker compose file for scaling commands
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      # Shared metrics volume
+      - autoscaler-metrics:/metrics
+    working_dir: /app
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Optional: Prometheus for monitoring
   prometheus:
     image: prom/prometheus:latest
@@ -253,6 +369,7 @@ volumes:
   easyocr-cache:
   prometheus-data:
   grafana-data:
+  autoscaler-metrics:
 
 networks:
   default:

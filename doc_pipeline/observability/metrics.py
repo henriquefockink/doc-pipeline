@@ -122,20 +122,26 @@ def get_metrics() -> Metrics:
     return _metrics
 
 
-AUTOSCALER_METRICS_FILE = "/tmp/doc_pipeline_autoscaler.prom"
+# Autoscaler metrics file paths (Docker volume first, then local fallback)
+AUTOSCALER_METRICS_PATHS = [
+    "/tmp/autoscaler-metrics/doc_pipeline_autoscaler.prom",  # Docker volume
+    "/tmp/doc_pipeline_autoscaler.prom",  # Local/legacy
+]
 
 
 def metrics_endpoint() -> Response:
     """Endpoint /metrics para Prometheus scraping."""
     content = generate_latest()
 
-    # Append autoscaler metrics if available
-    try:
-        with open(AUTOSCALER_METRICS_FILE) as f:
-            autoscaler_metrics = f.read()
-            content = content + b"\n" + autoscaler_metrics.encode()
-    except FileNotFoundError:
-        pass  # Autoscaler not running or no metrics yet
+    # Append autoscaler metrics if available (try multiple paths)
+    for metrics_path in AUTOSCALER_METRICS_PATHS:
+        try:
+            with open(metrics_path) as f:
+                autoscaler_metrics = f.read()
+                content = content + b"\n" + autoscaler_metrics.encode()
+                break  # Found metrics, stop searching
+        except FileNotFoundError:
+            continue  # Try next path
 
     return PlainTextResponse(
         content=content,
