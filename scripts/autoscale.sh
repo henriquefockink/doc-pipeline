@@ -18,7 +18,11 @@
 #   - worker-docid-2 (porta 9012) - sob demanda
 #   - worker-docid-3 (porta 9014) - sob demanda
 
-set -e
+# NOTE: Não usar "set -e" pois ((count++)) retorna exit code 1 quando count=0
+# e isso mata o script silenciosamente
+
+# Trap para logar erros inesperados
+trap 'log "ERROR: Script died unexpectedly at line $LINENO"' ERR
 
 # Configuração
 REDIS_HOST="${REDIS_HOST:-localhost}"
@@ -70,7 +74,7 @@ count_running_workers() {
     local count=0
     for worker in "${WORKERS[@]}"; do
         if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
-            ((count++))
+            count=$((count + 1))
         fi
     done
     echo "$count"
