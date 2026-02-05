@@ -1,7 +1,10 @@
 """
-Extractor híbrido: EasyOCR para texto + VLM para estruturar.
+Extractor híbrido: VLM primeiro, fallback para OCR se CPF inválido.
 
-Combina a precisão do OCR para dígitos com a inteligência do VLM para contexto.
+Estratégia:
+1. VLM (Qwen) extrai dados diretamente da imagem
+2. Valida CPF com algoritmo
+3. Se CPF inválido, tenta EasyOCR para extrair números
 """
 
 import json
@@ -10,72 +13,19 @@ from pathlib import Path
 
 from PIL import Image
 
+from ..prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from ..schemas import CNHData, RGData
+from ..utils import is_valid_cpf
 from .base import BaseExtractor
-
-
-# Prompts específicos para o modo híbrido (recebe texto, não imagem)
-CNH_HYBRID_PROMPT = """Você deve extrair dados de uma CNH brasileira. O texto abaixo foi extraído por OCR.
-
-TEXTO DO DOCUMENTO:
-{ocr_text}
-
-TAREFA: Encontre no texto acima os seguintes valores e copie-os EXATAMENTE como aparecem:
-
-1. NOME: Nome completo da pessoa (ex: RAUL DE OLIVEIRA)
-2. CPF: Procure um número no formato ###.###.###-## (11 dígitos com pontos e hífen)
-3. DATA NASCIMENTO: Data no formato DD/MM/AAAA
-4. N° REGISTRO: 11 dígitos consecutivos sem pontuação
-5. VALIDADE: Data futura
-6. CATEGORIA: Letra(s) da categoria (A, B, AB, etc)
-
-REGRA CRÍTICA: Copie os números EXATAMENTE como aparecem no texto. NÃO modifique, NÃO corrija, NÃO recalcule nenhum dígito.
-
-JSON:
-{{
-    "nome": "copie exatamente",
-    "cpf": "copie exatamente no formato ###.###.###-##",
-    "data_nascimento": "DD/MM/AAAA",
-    "numero_registro": "11 dígitos",
-    "validade": "DD/MM/AAAA",
-    "categoria": "letra(s)",
-    "primeira_habilitacao": "DD/MM/AAAA"
-}}"""
-
-RG_HYBRID_PROMPT = """Analise o texto abaixo extraído de um RG (Registro Geral) brasileiro e estruture os dados.
-
-TEXTO EXTRAÍDO DO DOCUMENTO:
-{ocr_text}
-
-IMPORTANTE:
-- Use EXATAMENTE os valores que aparecem no texto acima
-- NÃO modifique números ou dígitos - copie exatamente como estão
-- Se um campo não estiver no texto, retorne null
-- O CPF deve estar no formato ###.###.###-##
-- Datas no formato DD/MM/AAAA
-
-Retorne APENAS um JSON válido:
-{{
-    "nome": "nome completo da pessoa",
-    "nome_pai": "nome do pai",
-    "nome_mae": "nome da mãe",
-    "data_nascimento": "DD/MM/AAAA",
-    "naturalidade": "cidade/estado",
-    "cpf": "CPF exatamente como aparece no texto",
-    "rg": "número do RG",
-    "data_expedicao": "DD/MM/AAAA",
-    "orgao_expedidor": "órgão expedidor"
-}}
-
-Responda SOMENTE com o JSON."""
 
 
 class HybridExtractor(BaseExtractor):
     """
-    Extractor híbrido: EasyOCR + VLM.
+    Extractor híbrido: VLM + fallback OCR.
 
-    1. EasyOCR extrai texto bruto (preciso para dígitos)
-    2. VLM estrutura o texto em JSON (bom para contexto)
+    1. VLM extrai dados vendo a imagem (ignora fundo de segurança)
+    2. Valida CPF extraído
+    3. Se inválido, tenta EasyOCR para números
     """
 
     backend_name = "hybrid"
@@ -150,20 +100,17 @@ class HybridExtractor(BaseExtractor):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def _extract_ocr_text(self, image: Image.Image) -> str:
-        """Extrai texto da imagem usando EasyOCR."""
-        ocr = self._get_ocr_engine()
-        text, confidence = ocr.extract_text(image)
-        return text
+    def _generate_with_image(self, image: Image.Image, prompt: str) -> str:
+        """Gera resposta do VLM vendo a imagem diretamente."""
+        from qwen_vl_utils import process_vision_info
 
-    def _generate_text_only(self, prompt: str) -> str:
-        """Gera resposta do modelo apenas com texto (sem imagem)."""
         self.load_model()
 
         messages = [
             {
                 "role": "user",
                 "content": [
+                    {"type": "image", "image": image},
                     {"type": "text", "text": prompt},
                 ],
             }
@@ -173,8 +120,12 @@ class HybridExtractor(BaseExtractor):
             messages, tokenize=False, add_generation_prompt=True
         )
 
+        image_inputs, video_inputs = process_vision_info(messages)
+
         inputs = self._processor(
             text=[text],
+            images=image_inputs,
+            videos=video_inputs,
             padding=True,
             return_tensors="pt",
         )
@@ -195,6 +146,12 @@ class HybridExtractor(BaseExtractor):
 
         return output_text[0]
 
+    def _extract_ocr_text(self, image: Image.Image) -> str:
+        """Extrai texto da imagem usando EasyOCR."""
+        ocr = self._get_ocr_engine()
+        text, confidence = ocr.extract_text(image)
+        return text
+
     def _parse_json(self, text: str) -> dict:
         """Extrai e parseia JSON da resposta."""
         json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
@@ -210,51 +167,72 @@ class HybridExtractor(BaseExtractor):
         except json.JSONDecodeError:
             return {}
 
+    def _normalize_cpf(self, cpf: str | None) -> str | None:
+        """Normaliza CPF para formato ###.###.###-##"""
+        if not cpf:
+            return None
+
+        # Remove tudo exceto dígitos
+        digits = re.sub(r'\D', '', cpf)
+
+        if len(digits) != 11:
+            return None
+
+        return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:11]}"
+
     def _extract_cpf_from_text(self, text: str) -> str | None:
-        """Extrai CPF do texto usando regex. Formato: ###.###.###-##"""
-        # Padrão 1: CPF completo com pontuação
+        """Extrai CPF do texto usando regex. Retorna CPF normalizado ou None."""
+        # Padrão 1: CPF completo com pontuação (###.###.###-##)
         cpf_pattern = r'\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b'
         matches = re.findall(cpf_pattern, text)
         if matches:
             return matches[0]
 
-        # Padrão 2: CPF fragmentado em linhas (comum em OCR)
-        # Procura pelo label "CPF" e junta os próximos números
+        # Padrão 2: CPF com barra (#########/##) - comum em RGs antigos
+        cpf_barra_pattern = r'\b(\d{9})/(\d{2})\b'
+        matches = re.findall(cpf_barra_pattern, text)
+        if matches:
+            digits = matches[0][0]
+            verifier = matches[0][1]
+            return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{verifier}"
+
+        # Padrão 3: 11 dígitos consecutivos (sem formatação)
+        digits_pattern = r'\b(\d{11})\b'
+        matches = re.findall(digits_pattern, text)
+        for match in matches:
+            cpf = self._normalize_cpf(match)
+            if cpf and is_valid_cpf(cpf):
+                return cpf
+
+        # Padrão 4: CPF fragmentado em linhas próximas ao label "CPF"
         lines = text.split('\n')
         for i, line in enumerate(lines):
             if 'CPF' in line.upper() and i + 3 < len(lines):
-                # Procura nas próximas linhas por partes do CPF
                 parts = []
                 for j in range(i + 1, min(i + 6, len(lines))):
                     next_line = lines[j].strip()
-                    # Extrai apenas dígitos e hífen
-                    digits = re.findall(r'[\d-]+', next_line)
+                    digits = re.findall(r'[\d]+', next_line)
                     if digits:
                         parts.extend(digits)
-                    # Se já temos o suficiente, para
-                    joined = ''.join(parts).replace('-', '')
+                    joined = ''.join(parts)
                     if len(joined) >= 11:
                         break
 
-                # Tenta formar o CPF
-                all_digits = ''.join(parts).replace('-', '').replace('.', '')
+                all_digits = ''.join(parts)
                 if len(all_digits) >= 11:
-                    # Pega os primeiros 11 dígitos e formata
-                    cpf_digits = all_digits[:11]
-                    formatted = f"{cpf_digits[:3]}.{cpf_digits[3:6]}.{cpf_digits[6:9]}-{cpf_digits[9:11]}"
-                    return formatted
+                    cpf = self._normalize_cpf(all_digits[:11])
+                    if cpf:
+                        return cpf
 
         return None
 
     def _extract_registro_from_text(self, text: str) -> str | None:
         """Extrai número de registro (11 dígitos sem pontuação)."""
-        # Procura por 11 dígitos consecutivos que NÃO fazem parte de um CPF
         lines = text.split('\n')
         for line in lines:
             # Ignora linhas com formato de CPF
             if re.search(r'\d{3}\.\d{3}\.\d{3}-\d{2}', line):
                 continue
-            # Procura 11 dígitos consecutivos
             match = re.search(r'\b(\d{11})\b', line)
             if match:
                 return match.group(1)
@@ -266,26 +244,44 @@ class HybridExtractor(BaseExtractor):
         return self._extract_ocr_text(img)
 
     def extract_rg(self, image: str | Path | Image.Image) -> RGData:
-        """Extrai dados de um RG usando modo híbrido."""
+        """
+        Extrai dados de um RG.
+
+        Estratégia:
+        1. VLM extrai dados vendo a imagem
+        2. Valida CPF
+        3. Se inválido, tenta OCR para extrair CPF
+        """
         img = self._load_image(image)
 
-        # Step 1: OCR
-        ocr_text = self._extract_ocr_text(img)
-        print(f"[Hybrid] OCR extracted text:\n{ocr_text}\n")
-
-        # Step 2: Extrai CPF via regex (mais confiável para números)
-        cpf_regex = self._extract_cpf_from_text(ocr_text)
-        print(f"[Hybrid] Regex CPF: {cpf_regex}")
-
-        # Step 3: VLM estrutura o resto
-        prompt = RG_HYBRID_PROMPT.format(ocr_text=ocr_text)
-        response = self._generate_text_only(prompt)
+        # Step 1: VLM extrai dados vendo a imagem
+        print("[Hybrid] Step 1: VLM extraindo dados da imagem...")
+        response = self._generate_with_image(img, RG_EXTRACTION_PROMPT)
         print(f"[Hybrid] VLM response:\n{response}\n")
         data = self._parse_json(response)
 
-        # Override CPF com valor do regex (mais confiável)
-        if cpf_regex:
-            data["cpf"] = cpf_regex
+        # Step 2: Valida CPF
+        vlm_cpf = self._normalize_cpf(data.get("cpf"))
+        cpf_valid = is_valid_cpf(vlm_cpf)
+        print(f"[Hybrid] VLM CPF: {vlm_cpf} (válido: {cpf_valid})")
+
+        # Step 3: Se CPF inválido, tenta OCR
+        if not cpf_valid:
+            print("[Hybrid] Step 3: CPF inválido, tentando OCR...")
+            ocr_text = self._extract_ocr_text(img)
+            print(f"[Hybrid] OCR text (primeiros 500 chars):\n{ocr_text[:500]}\n")
+
+            ocr_cpf = self._extract_cpf_from_text(ocr_text)
+            if ocr_cpf and is_valid_cpf(ocr_cpf):
+                print(f"[Hybrid] OCR encontrou CPF válido: {ocr_cpf}")
+                data["cpf"] = ocr_cpf
+            elif ocr_cpf:
+                print(f"[Hybrid] OCR CPF também inválido: {ocr_cpf}")
+                # Usa o do VLM mesmo assim (pode ser útil para debug)
+                if vlm_cpf:
+                    data["cpf"] = vlm_cpf
+        else:
+            data["cpf"] = vlm_cpf
 
         print(f"[Hybrid] Final RG data: {data}")
 
@@ -302,31 +298,51 @@ class HybridExtractor(BaseExtractor):
         )
 
     def extract_cnh(self, image: str | Path | Image.Image) -> CNHData:
-        """Extrai dados de uma CNH usando modo híbrido."""
+        """
+        Extrai dados de uma CNH.
+
+        Estratégia:
+        1. VLM extrai dados vendo a imagem
+        2. Valida CPF
+        3. Se inválido, tenta OCR para extrair CPF e registro
+        """
         img = self._load_image(image)
 
-        # Step 1: OCR
-        ocr_text = self._extract_ocr_text(img)
-        print(f"[Hybrid] OCR extracted text:\n{ocr_text}\n")
-
-        # Step 2: Extrai CPF e Registro via regex (mais confiável para números)
-        cpf_regex = self._extract_cpf_from_text(ocr_text)
-        registro_regex = self._extract_registro_from_text(ocr_text)
-        print(f"[Hybrid] Regex CPF: {cpf_regex}, Registro: {registro_regex}")
-
-        # Step 3: VLM estrutura o resto
-        prompt = CNH_HYBRID_PROMPT.format(ocr_text=ocr_text)
-        response = self._generate_text_only(prompt)
+        # Step 1: VLM extrai dados vendo a imagem
+        print("[Hybrid] Step 1: VLM extraindo dados da imagem...")
+        response = self._generate_with_image(img, CNH_EXTRACTION_PROMPT)
         print(f"[Hybrid] VLM response:\n{response}\n")
         data = self._parse_json(response)
 
-        # Override com valores do regex (mais confiáveis)
-        if cpf_regex:
-            data["cpf"] = cpf_regex
-        if registro_regex:
-            data["numero_registro"] = registro_regex
+        # Step 2: Valida CPF
+        vlm_cpf = self._normalize_cpf(data.get("cpf"))
+        cpf_valid = is_valid_cpf(vlm_cpf)
+        print(f"[Hybrid] VLM CPF: {vlm_cpf} (válido: {cpf_valid})")
 
-        print(f"[Hybrid] Final data: {data}")
+        # Step 3: Se CPF inválido, tenta OCR
+        if not cpf_valid:
+            print("[Hybrid] Step 3: CPF inválido, tentando OCR...")
+            ocr_text = self._extract_ocr_text(img)
+            print(f"[Hybrid] OCR text (primeiros 500 chars):\n{ocr_text[:500]}\n")
+
+            ocr_cpf = self._extract_cpf_from_text(ocr_text)
+            if ocr_cpf and is_valid_cpf(ocr_cpf):
+                print(f"[Hybrid] OCR encontrou CPF válido: {ocr_cpf}")
+                data["cpf"] = ocr_cpf
+            elif ocr_cpf:
+                print(f"[Hybrid] OCR CPF também inválido: {ocr_cpf}")
+                if vlm_cpf:
+                    data["cpf"] = vlm_cpf
+
+            # Também tenta extrair registro via OCR
+            ocr_registro = self._extract_registro_from_text(ocr_text)
+            if ocr_registro and not data.get("numero_registro"):
+                print(f"[Hybrid] OCR encontrou registro: {ocr_registro}")
+                data["numero_registro"] = ocr_registro
+        else:
+            data["cpf"] = vlm_cpf
+
+        print(f"[Hybrid] Final CNH data: {data}")
 
         return CNHData(
             nome=data.get("nome"),
