@@ -81,8 +81,10 @@ class DocumentWorker:
         # Connect to Redis
         await self.queue.connect()
 
-        # Initialize pipeline
-        self.pipeline = DocumentPipeline()
+        # Initialize pipeline with shared OCR engine
+        self.pipeline = DocumentPipeline(
+            ocr_engine=self._get_shared_ocr_engine(),
+        )
 
         # Warmup models if configured
         if settings.warmup_on_start:
@@ -143,6 +145,19 @@ class DocumentWorker:
     def _get_pipeline(self, job: JobContext) -> DocumentPipeline:
         """Get the appropriate pipeline based on job backend."""
         backend = (job.extra_params or {}).get("backend", "vlm")
+
+        # Map API backend names to internal ExtractorBackend values
+        backend_map = {
+            "vlm": ExtractorBackend.QWEN_VL,
+            "ocr": ExtractorBackend.EASY_OCR,
+            "hybrid": ExtractorBackend.HYBRID,
+        }
+        requested_backend = backend_map.get(backend, ExtractorBackend.QWEN_VL)
+
+        # Check if main pipeline already uses the requested backend
+        # This avoids loading duplicate models
+        if self.pipeline and self.pipeline._extractor_backend == requested_backend:
+            return self.pipeline
 
         if backend == "ocr":
             # Lazy init OCR pipeline
