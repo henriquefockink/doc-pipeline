@@ -67,7 +67,7 @@ class OrientationCorrector:
         """Lazy load OCR engine."""
         if self._ocr_engine is None:
             from doc_pipeline.ocr import OCREngine
-            self._ocr_engine = OCREngine(lang="latin", use_gpu=True)
+            self._ocr_engine = OCREngine(lang="pt", use_gpu=True)
         return self._ocr_engine
 
     def correct(self, image: Image.Image) -> OrientationResult:
