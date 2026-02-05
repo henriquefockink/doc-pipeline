@@ -34,6 +34,7 @@ from doc_pipeline.observability import (
     metrics_endpoint,
     setup_logging,
 )
+from doc_pipeline.observability.worker_metrics import get_aggregated_worker_metrics
 from doc_pipeline.schemas import (
     ClassificationResult,
     DocumentType,
@@ -272,8 +273,34 @@ async def wait_for_result(request_id: str, timeout: float) -> dict:
 
 @app.get("/metrics")
 async def metrics():
-    """Endpoint para Prometheus scraping."""
-    return metrics_endpoint()
+    """Endpoint para Prometheus scraping.
+
+    Includes:
+    - API metrics (requests, latency, etc.)
+    - Autoscaler metrics (from file)
+    - Aggregated worker metrics (from Redis)
+    """
+    from fastapi.responses import PlainTextResponse
+    from prometheus_client import CONTENT_TYPE_LATEST
+
+    # Get base metrics (API + autoscaler)
+    base_response = metrics_endpoint()
+    content = base_response.body
+
+    # Add aggregated worker metrics from Redis
+    if queue_service and queue_service._redis:
+        try:
+            worker_metrics = await get_aggregated_worker_metrics(queue_service._redis)
+            if worker_metrics:
+                content = content + b"\n# Worker metrics (aggregated from Redis)\n"
+                content = content + worker_metrics.encode()
+        except Exception:
+            pass  # Don't fail metrics endpoint if worker aggregation fails
+
+    return PlainTextResponse(
+        content=content,
+        media_type=CONTENT_TYPE_LATEST,
+    )
 
 
 @app.get("/health", response_model=HealthResponse)

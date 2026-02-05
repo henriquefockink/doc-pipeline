@@ -168,21 +168,16 @@ curl -X POST http://localhost:9000/ocr \
 
 ### Métricas dos Workers
 
-Ambos os workers expõem métricas Prometheus em `/metrics`:
+Todos os workers expõem métricas Prometheus em `/metrics`:
 
-```yaml
-# Prometheus scrape config
-scrape_configs:
-  - job_name: 'doc-pipeline-worker'
-    static_configs:
-      - targets: ['worker:9010']
-    metrics_path: /metrics
-
-  - job_name: 'doc-pipeline-worker-ocr'
-    static_configs:
-      - targets: ['worker-ocr:9011']
-    metrics_path: /metrics
-```
+| Worker | Porta |
+|--------|-------|
+| DocID 1 | 9010 |
+| DocID 2 | 9012 |
+| DocID 3 | 9014 |
+| DocID 4 | 9016 |
+| DocID 5 | 9018 |
+| OCR | 9011 |
 
 **Métricas principais:**
 - `doc_pipeline_jobs_processed_total{operation, status, delivery_mode}` - Jobs processados
@@ -265,29 +260,17 @@ Extraction yields `RGData` or `CNHData` based on document type (defined in `sche
 
 ## Monitoring (Grafana + Prometheus)
 
-O stack de monitoramento é **opcional** (profile separado):
+O monitoramento usa Grafana e Prometheus **externos** (não locais):
 
-```bash
-# Subir SEM monitoring (só API + workers)
-docker compose up -d
-
-# Subir COM monitoring (inclui Grafana + Prometheus)
-docker compose --profile monitoring up -d
-
-# Acessar Grafana
-open http://localhost:3000  # admin:admin (ou GRAFANA_ADMIN_PASSWORD)
-```
-
-### Grafana e Prometheus de Produção
-
-O Grafana de produção está em:
-- **URL**: https://speech-analytics-grafana-dev.paneas.com
+- **Grafana**: https://speech-analytics-grafana-dev.paneas.com
 - **Credenciais**: Configuradas em `.env` (`GRAFANA_URL`, `GRAFANA_TOKEN`)
 
-**IMPORTANTE**: O Prometheus de produção roda **fora desta máquina** (não é local).
-- Ele scrapea as métricas via rede (API na porta 9000, workers nas portas 9010+)
-- O arquivo `prometheus.yml` local é apenas referência/backup
-- As métricas do autoscaler são expostas via `/metrics` da API (que lê `/tmp/doc_pipeline_autoscaler.prom`)
+O Prometheus de produção roda fora desta máquina e scrapea as métricas via rede:
+- API: porta 9000
+- Workers DocID: portas 9010, 9012, 9014, 9016, 9018
+- Worker OCR: porta 9011
+
+As métricas do autoscaler são expostas via `/metrics` da API.
 
 ### Autoscaler (Container)
 
@@ -335,29 +318,14 @@ monitoring/
 │   │   └── doc-pipeline.json   # Dashboard Overview
 │   └── alerts/                 # YAMLs de alertas (backup/modelo)
 │       └── doc-pipeline-alerts.yaml
-├── prometheus/
-│   └── prometheus.yml
 └── scripts/
     ├── create-dashboards.sh    # Cria dashboards via API Grafana
     └── create-alerts.sh        # Cria alertas via API Grafana
-
-grafana/provisioning/           # Provisioning automático (docker local)
-├── dashboards/
-│   ├── overview/               # Dashboard geral
-│   │   └── doc-pipeline.json
-│   └── workers/                # Dashboards por worker
-│       ├── worker-docid.json
-│       └── worker-ocr.json
-├── alerting/
-│   └── worker-ocr-alerts.yaml
-└── datasources/
-    └── prometheus.yml
 ```
 
 **Onde guardar novos arquivos:**
-- **Dashboards de workers**: `grafana/provisioning/dashboards/workers/worker-{nome}.json`
-- **Alertas de workers**: `monitoring/grafana/alerts/worker-{nome}-alerts.yaml`
-- **Dashboard overview**: `monitoring/grafana/dashboards/doc-pipeline.json`
+- **Dashboards**: `monitoring/grafana/dashboards/`
+- **Alertas**: `monitoring/grafana/alerts/`
 
 ### Criar/Atualizar Dashboards e Alertas via API
 

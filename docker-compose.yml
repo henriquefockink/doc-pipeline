@@ -59,6 +59,7 @@ services:
     ports:
       - "9010:9010"
     environment:
+      - WORKER_ID=docid-1
       - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
       - DOC_PIPELINE_WARMUP_ON_START=true
       - DOC_PIPELINE_LOG_JSON=true
@@ -100,6 +101,7 @@ services:
     ports:
       - "9012:9010"
     environment:
+      - WORKER_ID=docid-2
       - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
       - DOC_PIPELINE_WARMUP_ON_START=true
       - DOC_PIPELINE_LOG_JSON=true
@@ -142,6 +144,7 @@ services:
     ports:
       - "9014:9010"
     environment:
+      - WORKER_ID=docid-3
       - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
       - DOC_PIPELINE_WARMUP_ON_START=true
       - DOC_PIPELINE_LOG_JSON=true
@@ -184,6 +187,7 @@ services:
     ports:
       - "9016:9010"
     environment:
+      - WORKER_ID=docid-4
       - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
       - DOC_PIPELINE_WARMUP_ON_START=true
       - DOC_PIPELINE_LOG_JSON=true
@@ -226,6 +230,7 @@ services:
     ports:
       - "9018:9010"
     environment:
+      - WORKER_ID=docid-5
       - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
       - DOC_PIPELINE_WARMUP_ON_START=true
       - DOC_PIPELINE_LOG_JSON=true
@@ -326,49 +331,11 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # Optional: Prometheus for monitoring
-  prometheus:
-    image: prom/prometheus:latest
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-      - prometheus-data:/prometheus
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-      - '--storage.tsdb.path=/prometheus'
-      - '--web.enable-lifecycle'
-    depends_on:
-      - api
-      - worker-docid
-    profiles:
-      - monitoring
-    restart: unless-stopped
-
-  # Optional: Grafana for dashboards
-  grafana:
-    image: grafana/grafana:latest
-    ports:
-      - "3000:3000"
-    environment:
-      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
-      - GF_USERS_ALLOW_SIGN_UP=false
-    volumes:
-      - grafana-data:/var/lib/grafana
-      - ./grafana/provisioning:/etc/grafana/provisioning:ro
-    depends_on:
-      - prometheus
-    profiles:
-      - monitoring
-    restart: unless-stopped
-
 volumes:
   redis-data:
   temp-images:
   model-cache:
   easyocr-cache:
-  prometheus-data:
-  grafana-data:
   autoscaler-metrics:
 
 networks:

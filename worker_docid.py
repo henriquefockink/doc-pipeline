@@ -32,6 +32,7 @@ from doc_pipeline.shared import (
     get_delivery_service,
     get_queue_service,
 )
+from doc_pipeline.observability.worker_metrics import WorkerMetricsPusher
 
 # Setup logging
 settings = get_settings()
@@ -66,6 +67,12 @@ class DocumentWorker:
         self.orientation_corrector = OrientationCorrector(use_text_detection=True)
         self._running = False
         self._current_job: JobContext | None = None
+        # Worker ID for metrics aggregation (from env or derived from port)
+        self._worker_id = os.environ.get(
+            "WORKER_ID",
+            f"docid-{settings.worker_health_port}"
+        )
+        self._metrics_pusher: WorkerMetricsPusher | None = None
 
     def _get_shared_ocr_engine(self) -> OCREngine:
         """Get or create the shared OCR engine (lazy loaded)."""
@@ -76,10 +83,19 @@ class DocumentWorker:
 
     async def start(self) -> None:
         """Initialize and start the worker."""
-        logger.info("worker_starting")
+        logger.info("worker_starting", worker_id=self._worker_id)
 
         # Connect to Redis
         await self.queue.connect()
+
+        # Start metrics pusher (pushes to Redis for API aggregation)
+        self._metrics_pusher = WorkerMetricsPusher(
+            redis_client=self.queue._redis,
+            worker_id=self._worker_id,
+            interval=10.0,
+        )
+        await self._metrics_pusher.start()
+        logger.info("metrics_pusher_started", worker_id=self._worker_id)
 
         # Initialize pipeline with shared OCR engine
         self.pipeline = DocumentPipeline(
@@ -97,16 +113,21 @@ class DocumentWorker:
             logger.info("warmup_complete", component="extractor")
 
         self._running = True
-        logger.info("worker_started")
+        logger.info("worker_started", worker_id=self._worker_id)
 
     async def stop(self) -> None:
         """Stop the worker gracefully."""
-        logger.info("worker_stopping")
+        logger.info("worker_stopping", worker_id=self._worker_id)
         self._running = False
 
         # Wait for current job to complete
         if self._current_job:
             logger.info("waiting_for_current_job", request_id=self._current_job.request_id)
+
+        # Stop metrics pusher
+        if self._metrics_pusher:
+            await self._metrics_pusher.stop()
+            logger.info("metrics_pusher_stopped", worker_id=self._worker_id)
 
         # Cleanup
         await self.delivery.close()
@@ -115,7 +136,7 @@ class DocumentWorker:
         if self.pipeline:
             self.pipeline.unload_extractor()
 
-        logger.info("worker_stopped")
+        logger.info("worker_stopped", worker_id=self._worker_id)
 
     async def run(self) -> None:
         """Main worker loop."""

@@ -30,11 +30,12 @@ class Metrics:
         )
 
         # Latência dos requests (histograma)
+        # Buckets estendidos para capturar latências longas (fila cheia)
         self.request_duration_seconds = Histogram(
             f"{namespace}_request_duration_seconds",
             "Duração dos requests em segundos",
             ["method", "endpoint"],
-            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+            buckets=(0.1, 0.5, 1.0, 5.0, 10.0, 30.0, 60.0, 120.0, 180.0, 300.0, 600.0),
         )
 
         # Requests em andamento
@@ -106,7 +107,7 @@ class Metrics:
             f"{namespace}_worker_processing_seconds",
             "Time spent processing a job (excluding queue wait)",
             ["operation"],
-            buckets=(0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0),
+            buckets=(0.5, 1.0, 2.5, 5.0, 8.0, 10.0, 12.0, 15.0, 20.0, 30.0, 60.0),
         )
 
 
