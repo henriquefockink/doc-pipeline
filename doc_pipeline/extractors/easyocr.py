@@ -25,6 +25,7 @@ class EasyOCRExtractor(BaseExtractor):
         lang: str = "pt",
         use_gpu: bool = True,
         device: str = "cuda:0",
+        ocr_engine=None,
     ):
         """
         Inicializa o extractor EasyOCR.
@@ -33,15 +34,17 @@ class EasyOCRExtractor(BaseExtractor):
             lang: Idioma para OCR (pt, en, etc.)
             use_gpu: Usar GPU para inferência
             device: Device para inferência (não usado diretamente pelo EasyOCR)
+            ocr_engine: Optional shared OCREngine instance. If not provided,
+                       one will be created lazily when needed.
         """
         self.lang = lang
         self.use_gpu = use_gpu
         self.device = device
-        self._engine: OCREngine | None = None
+        self._engine: OCREngine | None = ocr_engine
 
     @property
     def engine(self) -> OCREngine:
-        """Lazy load OCR engine."""
+        """Get or lazy load OCR engine."""
         if self._engine is None:
             self._engine = OCREngine(
                 lang=self.lang,

@@ -22,6 +22,7 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from doc_pipeline import DocumentPipeline
 from doc_pipeline.config import ExtractorBackend, get_settings
 from doc_pipeline.observability import get_logger, get_metrics, setup_logging
+from doc_pipeline.ocr import OCREngine
 from doc_pipeline.preprocessing import OrientationCorrector
 from doc_pipeline.utils import validate_cpf
 from doc_pipeline.shared import (
@@ -59,9 +60,19 @@ class DocumentWorker:
         self.queue: QueueService = get_queue_service()
         self.delivery: DeliveryService = get_delivery_service()
         self.metrics = get_metrics()
+        # Shared OCR engine for orientation correction and hybrid extractor
+        # This avoids loading EasyOCR multiple times (~4-8GB VRAM savings)
+        self._shared_ocr_engine: OCREngine | None = None
         self.orientation_corrector = OrientationCorrector(use_text_detection=True)
         self._running = False
         self._current_job: JobContext | None = None
+
+    def _get_shared_ocr_engine(self) -> OCREngine:
+        """Get or create the shared OCR engine (lazy loaded)."""
+        if self._shared_ocr_engine is None:
+            logger.info("initializing_shared_ocr_engine")
+            self._shared_ocr_engine = OCREngine(lang="pt", use_gpu=True)
+        return self._shared_ocr_engine
 
     async def start(self) -> None:
         """Initialize and start the worker."""
@@ -139,6 +150,7 @@ class DocumentWorker:
                 logger.info("initializing_ocr_pipeline")
                 self.pipeline_ocr = DocumentPipeline(
                     extractor_backend=ExtractorBackend.EASY_OCR,
+                    ocr_engine=self._get_shared_ocr_engine(),
                 )
             return self.pipeline_ocr
 
@@ -148,6 +160,7 @@ class DocumentWorker:
                 logger.info("initializing_hybrid_pipeline")
                 self.pipeline_hybrid = DocumentPipeline(
                     extractor_backend=ExtractorBackend.HYBRID,
+                    ocr_engine=self._get_shared_ocr_engine(),
                 )
             return self.pipeline_hybrid
 
@@ -191,6 +204,9 @@ class DocumentWorker:
             # Orientation correction (can be disabled via auto_rotate=False)
             auto_rotate = (job.extra_params or {}).get("auto_rotate", True)
             if auto_rotate:
+                # Ensure orientation corrector uses shared OCR engine
+                if self.orientation_corrector._ocr_engine is None:
+                    self.orientation_corrector._ocr_engine = self._get_shared_ocr_engine()
                 orientation_result = self.orientation_corrector.correct(image)
                 if orientation_result.was_corrected:
                     logger.info(

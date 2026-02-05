@@ -34,15 +34,16 @@ class HybridExtractor(BaseExtractor):
         self,
         model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct",
         device: str = "cuda:0",
+        ocr_engine=None,
     ):
         self.model_name = model_name
         self.device = device
-        self._ocr_engine = None
+        self._ocr_engine = ocr_engine
         self._model = None
         self._processor = None
 
     def _get_ocr_engine(self):
-        """Lazy load OCR engine."""
+        """Get or lazy load OCR engine."""
         if self._ocr_engine is None:
             from ..ocr import OCREngine
             self._ocr_engine = OCREngine(lang="pt", use_gpu=True)

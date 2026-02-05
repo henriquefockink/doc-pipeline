@@ -52,19 +52,21 @@ class OrientationCorrector:
     2. Then detect text orientation using OCR and correct if needed
     """
 
-    def __init__(self, use_text_detection: bool = True):
+    def __init__(self, use_text_detection: bool = True, ocr_engine=None):
         """
         Initialize the orientation corrector.
 
         Args:
             use_text_detection: Whether to use OCR-based text detection
                                for orientation correction. Requires easyocr.
+            ocr_engine: Optional shared OCREngine instance. If not provided,
+                       one will be created lazily when needed.
         """
         self.use_text_detection = use_text_detection
-        self._ocr_engine = None
+        self._ocr_engine = ocr_engine
 
     def _get_ocr_engine(self):
-        """Lazy load OCR engine."""
+        """Get or lazy load OCR engine."""
         if self._ocr_engine is None:
             from doc_pipeline.ocr import OCREngine
             self._ocr_engine = OCREngine(lang="pt", use_gpu=True)

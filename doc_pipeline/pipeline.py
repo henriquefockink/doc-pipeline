@@ -39,6 +39,7 @@ class DocumentPipeline:
         extractor_backend: ExtractorBackend | str | None = None,
         extractor_device: str | None = None,
         settings: Settings | None = None,
+        ocr_engine=None,
     ):
         """
         Inicializa o pipeline.
@@ -51,8 +52,10 @@ class DocumentPipeline:
             extractor_backend: Backend para extração (qwen-vl ou easy-ocr)
             extractor_device: Device para o extractor
             settings: Settings customizadas (sobrescreve env vars)
+            ocr_engine: Shared OCREngine instance for extractors that need OCR
         """
         self._settings = settings or get_settings()
+        self._ocr_engine = ocr_engine
 
         # Override settings com parâmetros explícitos
         self._classifier_model_path = (
@@ -111,12 +114,14 @@ class DocumentPipeline:
                     lang=self._settings.ocr_language,
                     use_gpu=self._settings.ocr_use_gpu,
                     device=self._extractor_device,
+                    ocr_engine=self._ocr_engine,
                 )
             elif self._extractor_backend == ExtractorBackend.HYBRID:
                 from .extractors.hybrid import HybridExtractor
                 self._extractor = HybridExtractor(
                     model_name=self._settings.extractor_model_qwen,
                     device=self._extractor_device,
+                    ocr_engine=self._ocr_engine,
                 )
             else:
                 raise ValueError(f"Backend não suportado: {self._extractor_backend}")
