@@ -68,6 +68,9 @@ class CNHData(BaseModel):
     data_nascimento: str | None = Field(
         default=None, description="Data de nascimento (DD/MM/AAAA)"
     )
+    doc_identidade: str | None = Field(
+        default=None, description="Documento de identidade (RG)"
+    )
     numero_registro: str | None = Field(
         default=None, description="Número de registro da CNH"
     )
@@ -94,10 +97,10 @@ class ImageCorrection(BaseModel):
         default=0, description="Rotation applied in degrees (0, 90, 180, 270)"
     )
     correction_method: str | None = Field(
-        default=None, description="Method used: 'exif', 'text_detection', or 'exif+text_detection'"
+        default=None, description="Method used: 'exif', 'doctr_classification', or 'exif+doctr_classification'"
     )
     confidence: float | None = Field(
-        default=None, description="Confidence of text-based detection (if used)"
+        default=None, description="Confidence of docTR orientation classification (if used)"
     )
 
 

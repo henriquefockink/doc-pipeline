@@ -2,6 +2,6 @@
 Utility functions.
 """
 
-from .cpf import validate_cpf, is_valid_cpf
+from .cpf import fix_cpf_rg_swap, is_valid_cpf, normalize_cpf, validate_cpf
 
-__all__ = ["validate_cpf", "is_valid_cpf"]
+__all__ = ["fix_cpf_rg_swap", "is_valid_cpf", "normalize_cpf", "validate_cpf"]

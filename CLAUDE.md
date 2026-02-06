@@ -92,24 +92,41 @@ doc-pipeline uses the **9000 port range** to avoid conflicts with other services
 ## Docker Deployment
 
 ```bash
-# Start all services (Redis + API + Workers)
+# Start core services (Redis + API + Worker 1 + Inference Server)
 docker compose up -d
+
+# Start ALL workers (including scale-profile workers 2-8)
+docker compose --profile scale up -d
 
 # View logs
 docker compose logs -f
-
-# Scale classification workers (if needed)
-docker compose up -d --scale worker=2
 
 # Stop services
 docker compose down
 ```
 
+**IMPORTANT**: Workers 2-8 use `profiles: [scale]`. You MUST use `--profile scale` to manage them:
+```bash
+# Start a specific scale worker
+docker compose --profile scale up -d worker-docid-6
+
+# List all workers (including scale profile)
+docker compose --profile scale ps
+
+# Rebuild scale workers
+docker compose --profile scale build worker-docid-6 worker-docid-7 worker-docid-8
+```
+
+The **autoscaler** handles this automatically via `docker compose --profile scale` in its commands. Use the `/warmup` API endpoint to pre-scale workers before expected load.
+
 Services:
 - **redis**: Queue backend (filas separadas por worker)
 - **api**: Stateless API que enfileira jobs (sem GPU)
-- **worker-docid**: Worker de classificação/extração (RG/CNH)
+- **inference-server**: Centralized Qwen VLM for batched inference (GPU, ~14GB VRAM)
+- **worker-docid-1**: Worker de classificação/extração — always active (lightweight, ~800MB)
+- **worker-docid-2 to 8**: Scale workers — managed by autoscaler (profiles: scale)
 - **worker-ocr**: Worker de OCR genérico
+- **autoscaler**: Monitors queue depth, scales workers 1-8 up/down
 
 ## Workers
 

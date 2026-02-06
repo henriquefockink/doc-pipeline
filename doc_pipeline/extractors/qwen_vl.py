@@ -10,6 +10,7 @@ from PIL import Image
 
 from ..prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from ..schemas import CNHData, RGData
+from ..utils import fix_cpf_rg_swap
 from .base import BaseExtractor
 
 
@@ -146,6 +147,57 @@ class QwenVLExtractor(BaseExtractor):
 
         return output_text[0]
 
+    def _generate_batch(self, images: list[Image.Image], prompts: list[str]) -> list[str]:
+        """Generate responses for a batch of images and prompts in a single forward pass."""
+        from qwen_vl_utils import process_vision_info
+
+        self.load_model()
+
+        all_texts = []
+        all_image_inputs = []
+
+        for image, prompt in zip(images, prompts, strict=True):
+            messages = [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": image},
+                        {"type": "text", "text": prompt},
+                    ],
+                }
+            ]
+
+            text = self._processor.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=True
+            )
+            all_texts.append(text)
+
+            img_inputs, _ = process_vision_info(messages)
+            if img_inputs:
+                all_image_inputs.extend(img_inputs)
+
+        inputs = self._processor(
+            text=all_texts,
+            images=all_image_inputs if all_image_inputs else None,
+            videos=None,
+            padding=True,
+            return_tensors="pt",
+        )
+        inputs = inputs.to(self._model.device)
+
+        generated_ids = self._model.generate(**inputs, max_new_tokens=1024)
+
+        generated_ids_trimmed = [
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=True)
+        ]
+
+        return self._processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
+
     def _parse_json(self, text: str) -> dict:
         """Extrai e parseia JSON da resposta do modelo."""
         # Tenta extrair JSON de blocos de código
@@ -175,6 +227,9 @@ class QwenVLExtractor(BaseExtractor):
         response = self._generate(img, RG_EXTRACTION_PROMPT)
         data = self._parse_json(response)
 
+        # Fix CPF/RG swap (VLM sometimes confuses them) and normalize CPF
+        data = fix_cpf_rg_swap(data)
+
         return RGData(
             nome=data.get("nome"),
             nome_pai=data.get("nome_pai"),
@@ -193,10 +248,14 @@ class QwenVLExtractor(BaseExtractor):
         response = self._generate(img, CNH_EXTRACTION_PROMPT)
         data = self._parse_json(response)
 
+        # Fix CPF/doc_identidade swap and normalize CPF
+        data = fix_cpf_rg_swap(data)
+
         return CNHData(
             nome=data.get("nome"),
             cpf=data.get("cpf"),
             data_nascimento=data.get("data_nascimento"),
+            doc_identidade=data.get("doc_identidade"),
             numero_registro=data.get("numero_registro"),
             numero_espelho=data.get("numero_espelho"),
             validade=data.get("validade"),

@@ -6,6 +6,7 @@ class QueueName:
 
     DOCUMENTS = "queue:doc:documents"  # Main processing queue (classify/extract/process)
     OCR = "queue:doc:ocr"  # OCR processing queue (separate worker)
+    INFERENCE = "queue:doc:inference"  # VLM inference queue (inference server)
     DLQ = "queue:doc:dlq"  # Dead letter queue for failed jobs
 
 
@@ -30,3 +31,8 @@ def progress_key(request_id: str) -> str:
 def result_cache_key(request_id: str) -> str:
     """Return the key for caching job results."""
     return f"result:{request_id}"
+
+
+def inference_reply_channel(inference_id: str) -> str:
+    """Return the Pub/Sub channel name for an inference reply."""
+    return f"inference:reply:{inference_id}"

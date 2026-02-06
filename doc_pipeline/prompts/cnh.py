@@ -6,6 +6,7 @@ CNH_FIELDS = [
     "nome",
     "cpf",
     "data_nascimento",
+    "doc_identidade",
     "numero_registro",
     "numero_espelho",
     "validade",
@@ -20,7 +21,7 @@ IMPORTANTE:
 - Extraia EXATAMENTE o texto como aparece no documento
 - Use o formato DD/MM/AAAA para datas
 - Se um campo não estiver visível ou legível, retorne null
-- O CPF deve estar no formato ###.###.###-##
+- O CPF tem 11 dígitos e pode aparecer como ###.###.###-## ou #########/## (formato novo)
 - A categoria pode ser: A, B, AB, C, D, E ou combinações
 
 Retorne APENAS um JSON válido com os seguintes campos:
@@ -28,6 +29,7 @@ Retorne APENAS um JSON válido com os seguintes campos:
     "nome": "nome completo da pessoa",
     "cpf": "###.###.###-##",
     "data_nascimento": "DD/MM/AAAA",
+    "doc_identidade": "número do documento de identidade (RG)",
     "numero_registro": "número de registro da CNH",
     "numero_espelho": "número do espelho",
     "validade": "DD/MM/AAAA",

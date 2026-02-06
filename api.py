@@ -709,8 +709,9 @@ async def process(
                 detail=f"Timeout waiting for result after {settings.sync_timeout_seconds}s",
             )
 
-        if result.get("error"):
-            raise HTTPException(status_code=500, detail=result["error"])
+        if result.get("error") or result.get("result") is None:
+            error_detail = result.get("error") or "Processing failed (no result)"
+            raise HTTPException(status_code=500, detail=error_detail)
 
         metrics.requests_by_client.labels(
             client=client,
@@ -912,7 +913,7 @@ async def get_job_status(
 
 class WarmupRequest(BaseModel):
     """Request to warmup workers."""
-    workers: int = Field(default=3, ge=1, le=5, description="Number of workers to keep running (max 5 via warmup)")
+    workers: int = Field(default=3, ge=1, le=8, description="Number of workers to keep running (max 8 via warmup)")
     duration_minutes: int = Field(default=30, ge=5, le=120, description="Duration to keep workers up (5-120 min)")
 
 

@@ -20,8 +20,9 @@ IMPORTANTE:
 - Extraia EXATAMENTE o texto como aparece no documento
 - Use o formato DD/MM/AAAA para datas
 - Se um campo não estiver visível ou legível, retorne null
-- O CPF deve estar no formato ###.###.###-##
-- O RG pode ter formatos variados dependendo do estado
+- O CPF tem 11 dígitos e pode aparecer como ###.###.###-## ou #########/## (formato novo)
+- O RG é o número de registro geral e tem formato variado dependendo do estado
+- NÃO confunda CPF com RG: o CPF sempre tem exatamente 11 dígitos
 
 Retorne APENAS um JSON válido com os seguintes campos:
 {

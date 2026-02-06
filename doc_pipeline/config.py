@@ -61,15 +61,41 @@ class Settings(BaseSettings):
         description="Modelo Qwen-VL a usar",
     )
 
+    # Orientation correction settings
+    orientation_enabled: bool = Field(
+        default=True,
+        description="Enable orientation correction via docTR",
+    )
+    orientation_device: str | None = Field(
+        default=None,
+        description="Device for orientation model (default: uses classifier_device)",
+    )
+    orientation_confidence_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence to apply orientation correction",
+    )
+    orientation_use_torch_compile: bool = Field(
+        default=False,
+        description="Use torch.compile for orientation model (faster after warmup)",
+    )
+
     # API settings
     api_host: str = Field(default="0.0.0.0", description="Host da API")
     api_port: int = Field(default=9000, description="Porta da API")
 
     # Authentication settings
     api_key: str | None = Field(default=None, description="API key master (env)")
-    api_keys: str | None = Field(default=None, description="Lista de API keys master separadas por vírgula")
-    database_url: str | None = Field(default=None, description="PostgreSQL URL para API keys dinâmicas")
-    warmup_api_key: str | None = Field(default=None, description="API key dedicada para endpoint /warmup")
+    api_keys: str | None = Field(
+        default=None, description="Lista de API keys master separadas por vírgula"
+    )
+    database_url: str | None = Field(
+        default=None, description="PostgreSQL URL para API keys dinâmicas"
+    )
+    warmup_api_key: str | None = Field(
+        default=None, description="API key dedicada para endpoint /warmup"
+    )
 
     @property
     def api_keys_list(self) -> list[str]:
@@ -159,6 +185,40 @@ class Settings(BaseSettings):
     worker_ocr_health_port: int = Field(
         default=9011,
         description="OCR Worker health check port",
+    )
+
+    # Inference server settings
+    inference_server_enabled: bool = Field(
+        default=False,
+        description="Use remote inference server instead of local VLM",
+    )
+    inference_timeout_seconds: float = Field(
+        default=30.0,
+        description="Timeout for inference requests",
+    )
+    inference_server_health_port: int = Field(
+        default=9020,
+        description="Inference server health check port",
+    )
+    inference_batch_size: int = Field(
+        default=4,
+        ge=1,
+        le=16,
+        description="Max batch size for inference server (higher = more GPU throughput)",
+    )
+    inference_batch_timeout_ms: int = Field(
+        default=100,
+        ge=0,
+        le=1000,
+        description="Max ms to wait for batch to fill before processing",
+    )
+
+    # Worker concurrency settings
+    worker_concurrent_jobs: int = Field(
+        default=1,
+        ge=1,
+        le=16,
+        description="Max concurrent jobs per worker (>1 enables batching with inference server)",
     )
 
     # OCR settings

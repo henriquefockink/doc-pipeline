@@ -15,7 +15,7 @@ from PIL import Image
 
 from ..prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from ..schemas import CNHData, RGData
-from ..utils import is_valid_cpf
+from ..utils import fix_cpf_rg_swap, is_valid_cpf
 from .base import BaseExtractor
 
 
@@ -261,6 +261,9 @@ class HybridExtractor(BaseExtractor):
         print(f"[Hybrid] VLM response:\n{response}\n")
         data = self._parse_json(response)
 
+        # Fix CPF/RG swap before validation
+        data = fix_cpf_rg_swap(data)
+
         # Step 2: Valida CPF
         vlm_cpf = self._normalize_cpf(data.get("cpf"))
         cpf_valid = is_valid_cpf(vlm_cpf)
@@ -349,6 +352,7 @@ class HybridExtractor(BaseExtractor):
             nome=data.get("nome"),
             cpf=data.get("cpf"),
             data_nascimento=data.get("data_nascimento"),
+            doc_identidade=data.get("doc_identidade"),
             numero_registro=data.get("numero_registro"),
             numero_espelho=data.get("numero_espelho"),
             validade=data.get("validade"),

@@ -175,7 +175,7 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\"}[$__range]))", "legendFormat": "Jobs"}]},
+      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\"}[$__range]))", "legendFormat": "Jobs"}]},
 
     {"id": 6, "type": "stat", "title": "Erros (período)", "gridPos": {"h": 4, "w": 4, "x": 8, "y": 10},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
@@ -198,8 +198,8 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "list", "placement": "right"}},
       "targets": [
-        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le))", "legendFormat": "P50"},
-        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le))", "legendFormat": "P95"}
+        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P95"}
       ]},
 
     {"type": "row", "title": "🌐 API", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 18}, "collapsed": false},
@@ -232,15 +232,15 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
       "targets": [
-        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le, operation))", "legendFormat": "P50 {{operation}}"},
-        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (le, operation))", "legendFormat": "P95 {{operation}}"}
+        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le, operation))", "legendFormat": "P50 {{operation}}"},
+        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le, operation))", "legendFormat": "P95 {{operation}}"}
       ]},
 
     {"id": 31, "type": "timeseries", "title": "Jobs por Status", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 28},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 20}}},
       "options": {"legend": {"calcs": ["mean", "sum"], "displayMode": "table", "placement": "bottom"}},
-      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{job=~\"doc-pipeline-worker-docid.*\"}[5m])) by (operation, status)", "legendFormat": "{{operation}} - {{status}}"}]},
+      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\"}[5m])) by (operation, status)", "legendFormat": "{{operation}} - {{status}}"}]},
 
     {"type": "row", "title": "📄 Documents", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 36}, "collapsed": false},
 
@@ -314,37 +314,37 @@ create_dashboard "Worker OCR" "worker-ocr" "$FOLDER_WORKERS" '{
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}, "unit": "none"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "doc_pipeline_queue_depth{job=\"doc-pipeline-worker-ocr\"}", "legendFormat": "Queue"}]},
+      "targets": [{"expr": "doc_pipeline_queue_depth{job=\"doc-pipeline-api\"}", "legendFormat": "Queue"}]},
 
     {"type": "stat", "title": "Jobs (período)", "gridPos": {"h": 5, "w": 4, "x": 4, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-ocr\"}[$__range]))", "legendFormat": "Jobs"}]},
+      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\"}[$__range]))", "legendFormat": "Jobs"}]},
 
     {"type": "stat", "title": "P95 Latency", "gridPos": {"h": 5, "w": 4, "x": 8, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}, "unit": "s"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-worker-ocr\"}[5m])) by (le))", "legendFormat": "P95"}]},
+      "targets": [{"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P95"}]},
 
     {"type": "stat", "title": "Error Rate", "gridPos": {"h": 5, "w": 4, "x": 12, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.01}, {"color": "red", "value": 0.05}]}, "unit": "percentunit"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-ocr\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-ocr\"}[5m])) or vector(0)", "legendFormat": "Error Rate"}]},
+      "targets": [{"expr": "sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\",status=\"error\"}[5m])) / sum(rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\"}[5m])) or vector(0)", "legendFormat": "Error Rate"}]},
 
     {"type": "stat", "title": "Erros (período)", "gridPos": {"h": 5, "w": 4, "x": 16, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "short"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-ocr\",status=\"error\"}[$__range])) or vector(0)", "legendFormat": "Erros"}]},
+      "targets": [{"expr": "sum(increase(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\",status=\"error\"}[$__range])) or vector(0)", "legendFormat": "Erros"}]},
 
     {"type": "stat", "title": "Worker", "gridPos": {"h": 5, "w": 4, "x": 20, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [{"type": "value", "options": {"0": {"text": "DOWN", "color": "red"}, "1": {"text": "UP", "color": "green"}}}], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}},
       "options": {"colorMode": "background", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "up{job=\"doc-pipeline-worker-ocr\"}", "legendFormat": "Status"}]},
+      "targets": [{"expr": "up{job=\"doc-pipeline-api\"}", "legendFormat": "Status"}]},
 
     {"type": "row", "title": "Processing", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6}},
 
@@ -353,9 +353,9 @@ create_dashboard "Worker OCR" "worker-ocr" "$FOLDER_WORKERS" '{
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
       "targets": [
-        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-worker-ocr\"}[5m])) by (le))", "legendFormat": "P50"},
-        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-worker-ocr\"}[5m])) by (le))", "legendFormat": "P95"},
-        {"expr": "histogram_quantile(0.99, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-worker-ocr\"}[5m])) by (le))", "legendFormat": "P99"}
+        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P95"},
+        {"expr": "histogram_quantile(0.99, sum(rate(doc_pipeline_worker_processing_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P99"}
       ]},
 
     {"type": "timeseries", "title": "Jobs por Status", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
@@ -363,23 +363,23 @@ create_dashboard "Worker OCR" "worker-ocr" "$FOLDER_WORKERS" '{
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "ops", "custom": {"drawStyle": "line", "fillOpacity": 20}}},
       "options": {"legend": {"calcs": ["mean", "sum"], "displayMode": "table", "placement": "bottom"}},
       "targets": [
-        {"expr": "rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-ocr\",status=\"success\"}[5m])", "legendFormat": "Success"},
-        {"expr": "rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-worker-ocr\",status=\"error\"}[5m])", "legendFormat": "Error"}
+        {"expr": "rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\",status=\"success\"}[5m])", "legendFormat": "Success"},
+        {"expr": "rate(doc_pipeline_jobs_processed_total{job=\"doc-pipeline-api\",status=\"error\"}[5m])", "legendFormat": "Error"}
       ]},
 
     {"type": "timeseries", "title": "Queue Depth", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short", "custom": {"drawStyle": "line", "fillOpacity": 30}}},
       "options": {"legend": {"displayMode": "list", "placement": "bottom"}},
-      "targets": [{"expr": "doc_pipeline_queue_depth{job=\"doc-pipeline-worker-ocr\"}", "legendFormat": "Queue Depth"}]},
+      "targets": [{"expr": "doc_pipeline_queue_depth{job=\"doc-pipeline-api\"}", "legendFormat": "Queue Depth"}]},
 
     {"type": "timeseries", "title": "Queue Wait Time (P50/P95)", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "s", "custom": {"drawStyle": "line", "fillOpacity": 10}}},
       "options": {"legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"}},
       "targets": [
-        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=\"doc-pipeline-worker-ocr\"}[5m])) by (le))", "legendFormat": "P50"},
-        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=\"doc-pipeline-worker-ocr\"}[5m])) by (le))", "legendFormat": "P95"}
+        {"expr": "histogram_quantile(0.50, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P50"},
+        {"expr": "histogram_quantile(0.95, sum(rate(doc_pipeline_queue_wait_seconds_bucket{job=\"doc-pipeline-api\"}[5m])) by (le))", "legendFormat": "P95"}
       ]}
   ]
 }'
