@@ -68,6 +68,9 @@ class CNHData(BaseModel):
     data_nascimento: str | None = Field(
         default=None, description="Data de nascimento (DD/MM/AAAA)"
     )
+    doc_identidade: str | None = Field(
+        default=None, description="Documento de identidade (RG)"
+    )
     numero_registro: str | None = Field(
         default=None, description="Número de registro da CNH"
     )

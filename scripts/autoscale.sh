@@ -38,7 +38,7 @@ QUEUE_NAME="queue:doc:documents"
 METRICS_FILE="${METRICS_FILE:-/tmp/doc_pipeline_autoscaler.prom}"
 
 # Workers disponíveis (em ordem)
-WORKERS=("worker-docid-1" "worker-docid-2" "worker-docid-3" "worker-docid-4" "worker-docid-5")
+WORKERS=("worker-docid-1" "worker-docid-2" "worker-docid-3" "worker-docid-4" "worker-docid-5" "worker-docid-6" "worker-docid-7" "worker-docid-8")
 
 # Estado
 EMPTY_SINCE=0
@@ -86,7 +86,7 @@ get_warmup_status() {
 get_running_workers() {
     local running=""
     for worker in "${WORKERS[@]}"; do
-        if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+        if timeout 10 docker compose --profile scale ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             running="$running $worker"
         fi
     done
@@ -97,7 +97,7 @@ get_running_workers() {
 count_running_workers() {
     local count=0
     for worker in "${WORKERS[@]}"; do
-        if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+        if timeout 10 docker compose --profile scale ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             count=$((count + 1))
         fi
     done
@@ -107,13 +107,13 @@ count_running_workers() {
 # Inicia o próximo worker disponível
 start_next_worker() {
     for worker in "${WORKERS[@]}"; do
-        if ! timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+        if ! timeout 10 docker compose --profile scale ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             log "${GREEN}↑ Starting $worker${NC}"
             # Usa start se container existe, senão cria com up
-            if timeout 10 docker compose ps -a --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+            if timeout 10 docker compose --profile scale ps -a --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
                 timeout 60 docker compose start "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout starting $worker${NC}"
             else
-                timeout 60 docker compose up -d "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout creating $worker${NC}"
+                timeout 60 docker compose --profile scale up -d "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout creating $worker${NC}"
             fi
             SCALE_UP_TOTAL=$((SCALE_UP_TOTAL + 1))
             return 0
@@ -127,7 +127,7 @@ stop_last_worker() {
     # Itera de trás pra frente, nunca para o primeiro
     for ((i=${#WORKERS[@]}-1; i>0; i--)); do
         local worker="${WORKERS[$i]}"
-        if timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+        if timeout 10 docker compose --profile scale ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             log "${RED}↓ Stopping $worker${NC}"
             timeout 60 docker compose stop "$worker" 2>/dev/null || log "${YELLOW}⚠ Timeout stopping $worker${NC}"
             # Container fica parado mas pronto para próximo start (sem rm)
@@ -291,7 +291,7 @@ if [ "$current" -lt "$MIN_WORKERS" ]; then
     log "Starting minimum workers ($MIN_WORKERS)..."
     for ((i=0; i<MIN_WORKERS; i++)); do
         worker="${WORKERS[$i]}"
-        if ! timeout 10 docker compose ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
+        if ! timeout 10 docker compose --profile scale ps --status running --format '{{.Service}}' 2>/dev/null | grep -q "^${worker}$"; then
             timeout 60 docker compose up -d "$worker" 2>/dev/null
         fi
     done

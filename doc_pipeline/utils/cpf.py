@@ -63,6 +63,75 @@ def is_valid_cpf(cpf: str | None) -> bool:
     return True
 
 
+def normalize_cpf(cpf: str | None) -> str | None:
+    """
+    Normalize CPF to standard format ###.###.###-##.
+
+    Handles both traditional (###.###.###-##) and newer (#########/##) formats.
+
+    Returns None if input doesn't have exactly 11 digits.
+    """
+    if not cpf:
+        return None
+
+    digits = _extract_digits(cpf)
+    if len(digits) != 11:
+        return None
+
+    return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{digits[9:11]}"
+
+
+def _is_new_cpf_format(value: str | None) -> bool:
+    """Check if value matches the newer CPF format #########/##.
+
+    This format is exclusive to CPF — RG numbers never use it.
+    The VLM may misread a digit, so we detect by format, not validation.
+    """
+    if not value:
+        return False
+    return bool(re.match(r"^\d{9}/\d{2}$", value.strip()))
+
+
+def fix_cpf_rg_swap(data: dict) -> dict:
+    """
+    Detect and fix when VLM swaps CPF and RG/doc_identidade fields.
+
+    The VLM sometimes confuses CPF and RG numbers, especially with
+    the newer CPF format (#########/##) which looks like an ID number.
+
+    Works with both RG docs (field "rg") and CNH docs (field "doc_identidade").
+
+    Strategy:
+    1. If cpf field is valid → normalize and keep as-is
+    2. If cpf is invalid but rg/doc_identidade validates as CPF → swap them
+    3. If cpf is invalid and rg/doc_identidade matches new CPF format (#########/##) → swap
+       (even if check digits don't validate, since VLM may misread digits)
+    4. Normalize CPF to ###.###.###-## format
+    """
+    cpf_val = data.get("cpf")
+
+    # Detect which field holds the RG number (RG docs use "rg", CNH uses "doc_identidade")
+    rg_field = "rg" if "rg" in data else "doc_identidade" if "doc_identidade" in data else None
+    rg_val = data.get(rg_field) if rg_field else None
+
+    cpf_valid = is_valid_cpf(cpf_val)
+
+    if not cpf_valid and rg_val and is_valid_cpf(rg_val):
+        # RG/doc_identidade field contains a valid CPF — swap them
+        data["cpf"] = normalize_cpf(rg_val)
+        data[rg_field] = cpf_val
+    elif not cpf_valid and rg_val and _is_new_cpf_format(rg_val):
+        # RG field has new CPF format (#########/##) — definitely swapped
+        # Even if check digits don't match (VLM misread), swap by format
+        data["cpf"] = normalize_cpf(rg_val)
+        data[rg_field] = cpf_val
+    elif cpf_valid:
+        # Normalize to standard format
+        data["cpf"] = normalize_cpf(cpf_val)
+
+    return data
+
+
 def validate_cpf(cpf: str | None) -> dict:
     """
     Validate a CPF and return detailed result.

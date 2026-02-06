@@ -1,0 +1,50 @@
+# Dockerfile for Inference Server (GPU required, VLM only)
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+WORKDIR /app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    git \
+    libgl1 \
+    libglib2.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies (VLM + Redis + API only, no easyocr/doctr)
+RUN pip install --no-cache-dir \
+    "transformers>=4.57.0" \
+    "accelerate>=0.26.0" \
+    "qwen-vl-utils>=0.0.8" \
+    "pydantic>=2.0.0" \
+    "pydantic-settings>=2.0.0" \
+    "python-dotenv>=1.0.0" \
+    "fastapi>=0.109.0" \
+    "uvicorn>=0.27.0" \
+    "structlog>=24.0.0" \
+    "prometheus-client>=0.20.0" \
+    "pillow>=10.0.0" \
+    "pillow-heif>=0.16.0" \
+    "redis[hiredis]>=5.0.0" \
+    "httpx>=0.27.0"
+
+# Copy application code
+COPY inference_server.py .
+COPY doc_pipeline/ ./doc_pipeline/
+
+# Create directories
+RUN mkdir -p /tmp/doc-pipeline
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV DOC_PIPELINE_LOG_JSON=true
+ENV DOC_PIPELINE_INFERENCE_SERVER_HEALTH_PORT=9020
+
+# Expose health check port
+EXPOSE 9020
+
+# Health check with longer start period for model loading
+HEALTHCHECK --interval=30s --timeout=10s --start-period=180s --retries=3 \
+    CMD curl -f http://localhost:9020/health || exit 1
+
+CMD ["python", "inference_server.py"]
