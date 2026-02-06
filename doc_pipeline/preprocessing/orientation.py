@@ -1,14 +1,15 @@
 """
 Image orientation detection and correction.
 
-Uses a combination of EXIF data and text orientation detection
+Uses a combination of EXIF data and docTR page orientation classification
 to automatically correct rotated images.
 """
 
 from dataclasses import dataclass
 from enum import Enum
 
-from PIL import Image, ExifTags
+import numpy as np
+from PIL import ExifTags, Image
 
 from doc_pipeline.observability import get_logger
 
@@ -17,10 +18,11 @@ logger = get_logger(__name__)
 
 class RotationAngle(int, Enum):
     """Possible rotation angles."""
+
     NONE = 0
-    CW_90 = 90      # Clockwise 90°
-    CW_180 = 180    # Upside down
-    CCW_90 = 270    # Counter-clockwise 90° (or CW 270°)
+    CW_90 = 90  # Clockwise 90°
+    CW_180 = 180  # Upside down
+    CCW_90 = 270  # Counter-clockwise 90° (or CW 270°)
 
 
 @dataclass
@@ -30,8 +32,8 @@ class OrientationResult:
     image: Image.Image
     was_corrected: bool
     rotation_applied: RotationAngle
-    correction_method: str | None  # "exif", "text_detection", or None
-    confidence: float | None  # Confidence of text-based detection
+    correction_method: str | None  # "exif", "doctr_classification", or None
+    confidence: float | None  # Confidence of docTR-based detection
 
     def to_dict(self) -> dict:
         """Convert to dictionary for API response."""
@@ -43,34 +45,88 @@ class OrientationResult:
         }
 
 
+# Mapping from docTR angle output to RotationAngle.
+# docTR returns the angle the image IS rotated by, so we need to
+# apply the same rotation to correct it (PIL rotate is CCW).
+# docTR angle -> (RotationAngle, PIL rotation degrees)
+_DOCTR_ANGLE_MAP: dict[int, tuple[RotationAngle, int]] = {
+    0: (RotationAngle.NONE, 0),
+    -90: (RotationAngle.CW_90, 270),  # Image is rotated 90° CW → rotate 270° CCW to fix
+    180: (RotationAngle.CW_180, 180),
+    90: (RotationAngle.CCW_90, 90),  # Image is rotated 90° CCW → rotate 90° CCW to fix
+}
+
+
 class OrientationCorrector:
     """
-    Corrects image orientation using EXIF data and text detection.
+    Corrects image orientation using EXIF data and docTR classification.
 
     Strategy:
     1. First apply EXIF orientation (handles camera rotation metadata)
-    2. Then detect text orientation using OCR and correct if needed
+    2. Then classify page orientation using docTR MobileNetV3 (~50ms)
     """
 
-    def __init__(self, use_text_detection: bool = True, ocr_engine=None):
+    def __init__(
+        self,
+        use_text_detection: bool = True,
+        device: str = "cuda:0",
+        confidence_threshold: float = 0.5,
+        use_torch_compile: bool = False,
+        ocr_engine=None,  # kept for backward compatibility, ignored
+    ):
         """
         Initialize the orientation corrector.
 
         Args:
-            use_text_detection: Whether to use OCR-based text detection
-                               for orientation correction. Requires easyocr.
-            ocr_engine: Optional shared OCREngine instance. If not provided,
-                       one will be created lazily when needed.
+            use_text_detection: Whether to use docTR-based orientation detection.
+            device: Torch device for the orientation model (e.g. "cuda:0", "cpu").
+            confidence_threshold: Minimum confidence to apply correction (0-1).
+            use_torch_compile: Whether to apply torch.compile to the model.
+            ocr_engine: Ignored. Kept for backward compatibility.
         """
         self.use_text_detection = use_text_detection
-        self._ocr_engine = ocr_engine
+        self._device = device
+        self._confidence_threshold = confidence_threshold
+        self._use_torch_compile = use_torch_compile
+        self._predictor = None
 
-    def _get_ocr_engine(self):
-        """Get or lazy load OCR engine."""
-        if self._ocr_engine is None:
-            from doc_pipeline.ocr import OCREngine
-            self._ocr_engine = OCREngine(lang="pt", use_gpu=True)
-        return self._ocr_engine
+    def _get_predictor(self):
+        """Get or lazy-load the docTR page orientation predictor."""
+        if self._predictor is None:
+            import torch
+            from doctr.models import page_orientation_predictor
+
+            logger.info(
+                "loading_orientation_predictor",
+                device=self._device,
+                torch_compile=self._use_torch_compile,
+            )
+
+            self._predictor = page_orientation_predictor(
+                arch="mobilenet_v3_small_page_orientation",
+                pretrained=True,
+            )
+
+            # Move model to device
+            device = torch.device(self._device)
+            self._predictor.model = self._predictor.model.to(device)
+
+            if self._use_torch_compile:
+                self._predictor.model = torch.compile(self._predictor.model)
+
+            self._predictor.model.eval()
+
+            logger.info("orientation_predictor_loaded", device=self._device)
+
+        return self._predictor
+
+    def warmup(self) -> None:
+        """Run a dummy inference to pre-load the model and warm up CUDA kernels."""
+        logger.info("orientation_warmup_start")
+        predictor = self._get_predictor()
+        dummy = (255 * np.random.rand(512, 512, 3)).astype(np.uint8)
+        predictor([dummy])
+        logger.info("orientation_warmup_complete")
 
     def correct(self, image: Image.Image) -> OrientationResult:
         """
@@ -84,7 +140,6 @@ class OrientationCorrector:
         """
         logger.info("orientation_correction_starting", image_size=image.size)
 
-        original_image = image
         total_rotation = RotationAngle.NONE
         correction_method = None
         confidence = None
@@ -100,14 +155,18 @@ class OrientationCorrector:
                 rotation=exif_rotation.value,
             )
 
-        # Step 2: Text-based orientation detection
+        # Step 2: docTR-based orientation classification
         if self.use_text_detection:
             text_corrected, text_rotation, text_confidence = self._detect_text_orientation(image)
             if text_rotation != RotationAngle.NONE:
                 image = text_corrected
                 # Combine rotations
                 total_rotation = RotationAngle((total_rotation.value + text_rotation.value) % 360)
-                correction_method = "text_detection" if correction_method is None else "exif+text_detection"
+                correction_method = (
+                    "doctr_classification"
+                    if correction_method is None
+                    else "exif+doctr_classification"
+                )
                 confidence = text_confidence
                 logger.info(
                     "text_orientation_corrected",
@@ -179,131 +238,55 @@ class OrientationCorrector:
         self, image: Image.Image
     ) -> tuple[Image.Image, RotationAngle, float | None]:
         """
-        Detect text orientation using OCR and correct if needed.
+        Detect page orientation using docTR MobileNetV3 classifier.
 
-        Strategy:
-        - Run OCR at 0°, 90°, 180°, 270°
-        - The orientation with highest average confidence is likely correct
-        - Only correct if confidence difference is significant
+        Single forward pass (~50ms on GPU) instead of running OCR 4x.
 
         Returns:
             Tuple of (corrected image, rotation applied, confidence)
         """
         try:
-            import numpy as np
+            predictor = self._get_predictor()
 
-            ocr = self._get_ocr_engine()
+            # Convert PIL image to numpy array (RGB, uint8)
+            img_array = np.array(image)
 
-            # Test all 4 orientations
-            rotations = [
-                (RotationAngle.NONE, 0),
-                (RotationAngle.CW_90, 270),   # PIL rotate is CCW, so 270 = CW 90
-                (RotationAngle.CW_180, 180),
-                (RotationAngle.CCW_90, 90),   # PIL rotate 90 = CCW 90
-            ]
+            # docTR predictor expects list of numpy arrays
+            # Returns: [class_idxs, angles, confidences]
+            _class_idxs, angles, confidences = predictor([img_array])
 
-            results = []
-
-            for rotation_enum, pil_rotation in rotations:
-                # Rotate image
-                if pil_rotation == 0:
-                    rotated = image
-                else:
-                    rotated = image.rotate(pil_rotation, expand=True)
-
-                # Convert to numpy for OCR
-                img_array = np.array(rotated)
-
-                # Run OCR (readtext returns list of (bbox, text, confidence))
-                ocr_results = ocr.reader.readtext(img_array)
-
-                if not ocr_results:
-                    results.append((rotation_enum, pil_rotation, 0.0, 0))
-                    continue
-
-                # Calculate average confidence weighted by text length
-                total_weight = 0
-                weighted_confidence = 0
-
-                for _, text, conf in ocr_results:
-                    weight = len(text)
-                    weighted_confidence += conf * weight
-                    total_weight += weight
-
-                avg_confidence = weighted_confidence / total_weight if total_weight > 0 else 0
-                results.append((rotation_enum, pil_rotation, avg_confidence, len(ocr_results)))
-
-            # Log all results for debugging
-            for rot, _, conf, count in results:
-                logger.info(
-                    "orientation_test_result",
-                    rotation=rot.value,
-                    confidence=round(conf, 4),
-                    text_count=count,
-                )
-
-            # Find best orientation using a combined score
-            # Weight both confidence and text count
-            max_count = max(r[3] for r in results) or 1
-
-            def calc_score(r):
-                rot, pil_rot, conf, count = r
-                # Normalize text count (max becomes 1.0)
-                norm_count = count / max_count
-                # Combined score: 60% confidence + 40% text count
-                return conf * 0.6 + norm_count * 0.4
-
-            # Calculate scores for all results
-            scored_results = [(r, calc_score(r)) for r in results]
-            scored_results.sort(key=lambda x: x[1], reverse=True)
-
-            best_result, best_score = scored_results[0]
-            best_rotation, best_pil_rotation, best_confidence, best_text_count = best_result
-
-            # Also get original (0°) result for comparison
-            original_result = next(r for r in results if r[0] == RotationAngle.NONE)
-            original_score = calc_score(original_result)
+            predicted_angle = angles[0]  # one of: 0, -90, 180, 90
+            confidence = confidences[0]  # float 0-1
 
             logger.info(
-                "orientation_scores",
-                best_rotation=best_rotation.value,
-                best_score=round(best_score, 4),
-                original_score=round(original_score, 4),
+                "doctr_orientation_result",
+                predicted_angle=predicted_angle,
+                confidence=round(confidence, 4),
+                threshold=self._confidence_threshold,
             )
 
-            # Only correct if:
-            # 1. Best is not original (0°)
-            # 2. Best score is meaningfully better than original
-            original_confidence = original_result[2]
-            min_score_improvement = 0.02  # At least 2% score improvement needed
-
-            should_correct = (
-                best_rotation != RotationAngle.NONE
-                and best_confidence >= 0.15  # Minimum confidence threshold
-                and (best_score - original_score) >= min_score_improvement
+            # Map docTR angle to RotationAngle
+            rotation_angle, pil_rotation = _DOCTR_ANGLE_MAP.get(
+                predicted_angle, (RotationAngle.NONE, 0)
             )
 
-            if should_correct:
-                corrected = image.rotate(best_pil_rotation, expand=True)
+            # Only correct if confidence exceeds threshold and rotation is needed
+            if rotation_angle != RotationAngle.NONE and confidence >= self._confidence_threshold:
+                corrected = image.rotate(pil_rotation, expand=True)
                 logger.info(
                     "orientation_correction_applied",
-                    best_rotation=best_rotation.value,
-                    best_score=round(best_score, 4),
-                    original_score=round(original_score, 4),
-                    improvement=round(best_score - original_score, 4),
+                    rotation=rotation_angle.value,
+                    confidence=round(confidence, 4),
                 )
-                return corrected, best_rotation, best_confidence
+                return corrected, rotation_angle, confidence
 
-            logger.info(
-                "orientation_no_correction_needed",
-                best_rotation=best_rotation.value,
-                best_score=round(best_score, 4),
-                original_score=round(original_score, 4),
-            )
-            return image, RotationAngle.NONE, original_confidence
+            return image, RotationAngle.NONE, confidence
 
         except Exception as e:
-            logger.warning("text_orientation_detection_error", error=str(e), error_type=type(e).__name__)
+            logger.warning(
+                "text_orientation_detection_error", error=str(e), error_type=type(e).__name__
+            )
             import traceback
+
             logger.warning("text_orientation_detection_traceback", tb=traceback.format_exc())
             return image, RotationAngle.NONE, None

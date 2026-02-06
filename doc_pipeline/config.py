@@ -61,6 +61,26 @@ class Settings(BaseSettings):
         description="Modelo Qwen-VL a usar",
     )
 
+    # Orientation correction settings
+    orientation_enabled: bool = Field(
+        default=True,
+        description="Enable orientation correction via docTR",
+    )
+    orientation_device: str | None = Field(
+        default=None,
+        description="Device for orientation model (default: uses classifier_device)",
+    )
+    orientation_confidence_threshold: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Minimum confidence to apply orientation correction",
+    )
+    orientation_use_torch_compile: bool = Field(
+        default=False,
+        description="Use torch.compile for orientation model (faster after warmup)",
+    )
+
     # API settings
     api_host: str = Field(default="0.0.0.0", description="Host da API")
     api_port: int = Field(default=9000, description="Porta da API")

@@ -61,10 +61,15 @@ class DocumentWorker:
         self.queue: QueueService = get_queue_service()
         self.delivery: DeliveryService = get_delivery_service()
         self.metrics = get_metrics()
-        # Shared OCR engine for orientation correction and hybrid extractor
+        # Shared OCR engine for hybrid/easyocr extractors
         # This avoids loading EasyOCR multiple times (~4-8GB VRAM savings)
         self._shared_ocr_engine: OCREngine | None = None
-        self.orientation_corrector = OrientationCorrector(use_text_detection=True)
+        self.orientation_corrector = OrientationCorrector(
+            use_text_detection=settings.orientation_enabled,
+            device=settings.orientation_device or settings.classifier_device,
+            confidence_threshold=settings.orientation_confidence_threshold,
+            use_torch_compile=settings.orientation_use_torch_compile,
+        )
         self._running = False
         self._current_job: JobContext | None = None
         # Worker ID for metrics aggregation (from env or derived from port)
@@ -111,6 +116,11 @@ class DocumentWorker:
             logger.info("warmup_start", component="extractor")
             self.pipeline.warmup(load_classifier=False, load_extractor=True)
             logger.info("warmup_complete", component="extractor")
+
+            if settings.orientation_enabled:
+                logger.info("warmup_start", component="orientation")
+                self.orientation_corrector.warmup()
+                logger.info("warmup_complete", component="orientation")
 
         self._running = True
         logger.info("worker_started", worker_id=self._worker_id)
@@ -240,9 +250,6 @@ class DocumentWorker:
             # Orientation correction (can be disabled via auto_rotate=False)
             auto_rotate = (job.extra_params or {}).get("auto_rotate", True)
             if auto_rotate:
-                # Ensure orientation corrector uses shared OCR engine
-                if self.orientation_corrector._ocr_engine is None:
-                    self.orientation_corrector._ocr_engine = self._get_shared_ocr_engine()
                 orientation_result = self.orientation_corrector.correct(image)
                 if orientation_result.was_corrected:
                     logger.info(
