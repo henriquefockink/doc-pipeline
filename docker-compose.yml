@@ -479,6 +479,8 @@ services:
       - DOC_PIPELINE_WORKER_OCR_HEALTH_PORT=9011
       - DOC_PIPELINE_OCR_LANGUAGE=pt
       - DOC_PIPELINE_OCR_USE_GPU=true
+      - DOC_PIPELINE_ORIENTATION_ENABLED=${DOC_PIPELINE_ORIENTATION_ENABLED:-true}
+      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
     volumes:
       # Shared temp directory for files
       - temp-images:/tmp/doc-pipeline

@@ -20,6 +20,7 @@ from doc_pipeline.config import get_settings
 from doc_pipeline.observability import get_logger, get_metrics, setup_logging
 from doc_pipeline.ocr import OCREngine, PDFConverter
 from doc_pipeline.ocr.converter import is_pdf
+from doc_pipeline.preprocessing import OrientationCorrector
 from doc_pipeline.schemas import OCRPageResult, OCRResult
 from doc_pipeline.shared import DeliveryService, JobContext, QueueService
 from doc_pipeline.shared.constants import QueueName
@@ -44,6 +45,7 @@ class OCRWorker:
         # Lazy-loaded components
         self._ocr_engine: OCREngine | None = None
         self._pdf_converter: PDFConverter | None = None
+        self._orientation_corrector: OrientationCorrector | None = None
 
     @property
     def ocr_engine(self) -> OCREngine:
@@ -67,11 +69,27 @@ class OCRWorker:
             self._pdf_converter = PDFConverter(dpi=150)
         return self._pdf_converter
 
+    @property
+    def orientation_corrector(self) -> OrientationCorrector:
+        """Lazy load orientation corrector."""
+        if self._orientation_corrector is None:
+            self._orientation_corrector = OrientationCorrector(
+                use_text_detection=self.settings.orientation_enabled,
+                device=self.settings.orientation_device or self.settings.classifier_device,
+                confidence_threshold=self.settings.orientation_confidence_threshold,
+            )
+        return self._orientation_corrector
+
     def warmup(self):
         """Warmup models for faster first inference."""
         logger.info("warmup_start", component="ocr")
         self.ocr_engine.warmup()
         logger.info("warmup_complete", component="ocr")
+
+        if self.settings.orientation_enabled:
+            logger.info("warmup_start", component="orientation")
+            self.orientation_corrector.warmup()
+            logger.info("warmup_complete", component="orientation")
 
     async def run(self):
         """Main worker loop."""
@@ -206,6 +224,19 @@ class OCRWorker:
         pages = []
         for i, img in enumerate(images, start=1):
             t0 = time.perf_counter()
+
+            if self.settings.orientation_enabled:
+                result = self.orientation_corrector.correct(img)
+                if result.was_corrected:
+                    logger.info(
+                        "page_orientation_corrected",
+                        request_id=request_id,
+                        page=i,
+                        rotation=result.rotation_applied.value,
+                        method=result.correction_method,
+                    )
+                img = result.image
+
             text, confidence = self.ocr_engine.extract_text(img)
             ocr_time = (time.perf_counter() - t0) * 1000
             logger.info(
@@ -237,6 +268,18 @@ class OCRWorker:
     ) -> OCRResult:
         """Process image file."""
         img = Image.open(file_path)
+
+        if self.settings.orientation_enabled:
+            result = self.orientation_corrector.correct(img)
+            if result.was_corrected:
+                logger.info(
+                    "image_orientation_corrected",
+                    request_id=request_id,
+                    rotation=result.rotation_applied.value,
+                    method=result.correction_method,
+                )
+            img = result.image
+
         text, confidence = self.ocr_engine.extract_text(img)
 
         return OCRResult(
