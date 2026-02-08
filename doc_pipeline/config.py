@@ -135,7 +135,7 @@ class Settings(BaseSettings):
         description="Redis connection URL",
     )
     redis_max_connections: int = Field(
-        default=20,
+        default=200,
         description="Maximum Redis connections in pool",
     )
 
@@ -155,7 +155,7 @@ class Settings(BaseSettings):
 
     # Queue settings
     max_queue_size: int = Field(
-        default=100,
+        default=500,
         description="Maximum jobs allowed in queue",
     )
     queue_timeout_seconds: float = Field(

@@ -31,9 +31,9 @@ from prometheus_client import (
 from doc_pipeline.config import get_settings
 from doc_pipeline.extractors.qwen_vl import QwenVLExtractor
 from doc_pipeline.observability import get_logger, setup_logging
-from doc_pipeline.prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
-from doc_pipeline.schemas import CNHData, RGData
-from doc_pipeline.shared.constants import QueueName, inference_reply_channel
+from doc_pipeline.prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
+from doc_pipeline.schemas import CINData, CNHData, RGData
+from doc_pipeline.shared.constants import INFERENCE_REPLY_TTL, QueueName, inference_reply_key
 from doc_pipeline.shared.queue import QueueService, get_queue_service
 from doc_pipeline.utils import fix_cpf_rg_swap
 
@@ -194,6 +194,8 @@ class InferenceServer:
             return RG_EXTRACTION_PROMPT
         elif doc_type.startswith("cnh"):
             return CNH_EXTRACTION_PROMPT
+        elif doc_type.startswith("cin"):
+            return CIN_EXTRACTION_PROMPT
         else:
             raise ValueError(f"Unknown document type: {doc_type}")
 
@@ -204,6 +206,8 @@ class InferenceServer:
 
         if doc_type.startswith("rg"):
             model = RGData(**{k: v for k, v in data.items() if k in RGData.model_fields})
+        elif doc_type.startswith("cin"):
+            model = CINData(**{k: v for k, v in data.items() if k in CINData.model_fields})
         else:
             model = CNHData(**{k: v for k, v in data.items() if k in CNHData.model_fields})
 
@@ -212,7 +216,7 @@ class InferenceServer:
     async def _process_single(self, request: dict) -> None:
         """Process a single inference request (no batching)."""
         inference_id = request["inference_id"]
-        channel = inference_reply_channel(inference_id)
+        reply_key = inference_reply_key(inference_id)
         doc_type = request["document_type"]
         start_time = time.perf_counter()
 
@@ -275,7 +279,7 @@ class InferenceServer:
                 error_type=type(e).__name__,
             )
 
-        await self.queue.redis.publish(channel, json.dumps(reply))
+        await self.queue.redis.setex(reply_key, INFERENCE_REPLY_TTL, json.dumps(reply))
 
     async def _process_batch(self, batch: list[dict]) -> None:
         """Process a batch of inference requests in a single forward pass."""
@@ -338,7 +342,7 @@ class InferenceServer:
         text_idx = 0
         for i, request in enumerate(batch):
             inference_id = request["inference_id"]
-            channel = inference_reply_channel(inference_id)
+            reply_key = inference_reply_key(inference_id)
             doc_type = request["document_type"]
 
             if i in errors:
@@ -381,7 +385,7 @@ class InferenceServer:
                     ).inc()
                 text_idx += 1
 
-            await self.queue.redis.publish(channel, json.dumps(reply))
+            await self.queue.redis.setex(reply_key, INFERENCE_REPLY_TTL, json.dumps(reply))
 
 
 # Global server instance

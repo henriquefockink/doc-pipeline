@@ -13,8 +13,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
-from ..schemas import CNHData, RGData
+from ..prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
+from ..schemas import CINData, CNHData, RGData
 from ..utils import fix_cpf_rg_swap, is_valid_cpf
 from .base import BaseExtractor
 
@@ -359,4 +359,59 @@ class HybridExtractor(BaseExtractor):
             categoria=data.get("categoria"),
             observacoes=data.get("observacoes"),
             primeira_habilitacao=data.get("primeira_habilitacao"),
+        )
+
+    def extract_cin(self, image: str | Path | Image.Image) -> CINData:
+        """
+        Extrai dados de uma CIN.
+
+        Estratégia:
+        1. VLM extrai dados vendo a imagem
+        2. Valida CPF
+        3. Se inválido, tenta OCR para extrair CPF
+        """
+        img = self._load_image(image)
+
+        # Step 1: VLM extrai dados vendo a imagem
+        print("[Hybrid] Step 1: VLM extraindo dados da imagem (CIN)...")
+        response = self._generate_with_image(img, CIN_EXTRACTION_PROMPT)
+        print(f"[Hybrid] VLM response:\n{response}\n")
+        data = self._parse_json(response)
+
+        # Fix CPF swap before validation
+        data = fix_cpf_rg_swap(data)
+
+        # Step 2: Valida CPF
+        vlm_cpf = self._normalize_cpf(data.get("cpf"))
+        cpf_valid = is_valid_cpf(vlm_cpf)
+        print(f"[Hybrid] VLM CPF: {vlm_cpf} (válido: {cpf_valid})")
+
+        # Step 3: Se CPF inválido, tenta OCR
+        if not cpf_valid:
+            print("[Hybrid] Step 3: CPF inválido, tentando OCR...")
+            ocr_text = self._extract_ocr_text(img)
+            print(f"[Hybrid] OCR text (primeiros 500 chars):\n{ocr_text[:500]}\n")
+
+            ocr_cpf = self._extract_cpf_from_text(ocr_text)
+            if ocr_cpf and is_valid_cpf(ocr_cpf):
+                print(f"[Hybrid] OCR encontrou CPF válido: {ocr_cpf}")
+                data["cpf"] = ocr_cpf
+            elif ocr_cpf:
+                print(f"[Hybrid] OCR CPF também inválido: {ocr_cpf}")
+                if vlm_cpf:
+                    data["cpf"] = vlm_cpf
+        else:
+            data["cpf"] = vlm_cpf
+
+        print(f"[Hybrid] Final CIN data: {data}")
+
+        return CINData(
+            nome=data.get("nome"),
+            nome_pai=data.get("nome_pai"),
+            nome_mae=data.get("nome_mae"),
+            data_nascimento=data.get("data_nascimento"),
+            naturalidade=data.get("naturalidade"),
+            cpf=data.get("cpf"),
+            data_expedicao=data.get("data_expedicao"),
+            orgao_expedidor=data.get("orgao_expedidor"),
         )

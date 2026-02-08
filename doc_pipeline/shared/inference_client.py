@@ -8,7 +8,7 @@ import uuid
 
 from doc_pipeline.observability import get_logger
 
-from .constants import QueueName, inference_reply_channel
+from .constants import INFERENCE_REPLY_TTL, QueueName, inference_reply_key
 from .queue import QueueService
 
 logger = get_logger("inference_client")
@@ -35,52 +35,53 @@ class InferenceClient:
 
     async def extract(self, image_path: str, document_type: str, request_id: str) -> dict:
         """
-        Send inference request and wait for reply via Pub/Sub.
+        Send inference request and wait for reply via Redis polling.
 
         1. Generate inference_id
-        2. Subscribe to inference:reply:{inference_id} BEFORE enqueue (avoid race)
-        3. LPUSH request to queue:doc:inference
-        4. Wait for reply with timeout
-        5. Return result dict
+        2. LPUSH request to queue:doc:inference
+        3. Poll inference:result:{inference_id} until reply arrives
+        4. Return result dict
         """
         inference_id = str(uuid.uuid4())
-        channel = inference_reply_channel(inference_id)
+        reply_key = inference_reply_key(inference_id)
 
-        pubsub = self._queue.redis.pubsub()
-        await pubsub.subscribe(channel)
+        request = json.dumps(
+            {
+                "inference_id": inference_id,
+                "request_id": request_id,
+                "document_type": document_type,
+                "image_path": image_path,
+            }
+        )
+        await self._queue.redis.lpush(QueueName.INFERENCE, request)
+        logger.debug(
+            "inference_request_sent",
+            inference_id=inference_id,
+            request_id=request_id,
+            document_type=document_type,
+        )
 
-        try:
-            request = json.dumps(
-                {
-                    "inference_id": inference_id,
-                    "request_id": request_id,
-                    "document_type": document_type,
-                    "image_path": image_path,
-                }
-            )
-            await self._queue.redis.lpush(QueueName.INFERENCE, request)
-            logger.debug(
-                "inference_request_sent",
-                inference_id=inference_id,
-                request_id=request_id,
-                document_type=document_type,
-            )
+        # Poll for reply (same pattern as API wait_for_result)
+        poll_interval = 0.1  # 100ms between polls (inference is fast)
+        end_time = asyncio.get_event_loop().time() + self._timeout
 
-            # Wait for reply (same pattern as subscribe_result)
-            async with asyncio.timeout(self._timeout):
-                async for message in pubsub.listen():
-                    if message["type"] == "message":
-                        reply = json.loads(message["data"])
-                        if not reply["success"]:
-                            raise InferenceError(reply["error"])
-                        logger.debug(
-                            "inference_reply_received",
-                            inference_id=inference_id,
-                            inference_time_ms=reply.get("inference_time_ms"),
-                        )
-                        return reply
+        while True:
+            cached = await self._queue.redis.get(reply_key)
+            if cached:
+                # Clean up the key
+                await self._queue.redis.delete(reply_key)
+                reply = json.loads(cached)
+                if not reply["success"]:
+                    raise InferenceError(reply["error"])
+                logger.debug(
+                    "inference_reply_received",
+                    inference_id=inference_id,
+                    inference_time_ms=reply.get("inference_time_ms"),
+                )
+                return reply
 
-            raise InferenceTimeoutError(f"Inference timeout after {self._timeout}s")
-        finally:
-            await pubsub.unsubscribe(channel)
-            await pubsub.aclose()
+            remaining = end_time - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                raise InferenceTimeoutError(f"Inference timeout after {self._timeout}s")
+
+            await asyncio.sleep(min(poll_interval, remaining))

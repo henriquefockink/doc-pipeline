@@ -29,6 +29,10 @@ class ClassificadorDocumentos:
         "cnh_digital",
         "cnh_frente",
         "cnh_verso",
+        "cin_aberta",
+        "cin_digital",
+        "cin_frente",
+        "cin_verso",
         "rg_aberto",
         "rg_digital",
         "rg_frente",
@@ -68,7 +72,8 @@ class ClassificadorDocumentos:
 
         # Carrega classes do checkpoint se disponível
         if "classes" in checkpoint:
-            self.classes = checkpoint["classes"]
+            # Map legacy "cni_" prefix to correct "cin_" prefix
+            self.classes = [c.replace("cni_", "cin_") if c.startswith("cni_") else c for c in checkpoint["classes"]]
         else:
             self.classes = self.CLASSES
 

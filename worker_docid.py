@@ -26,7 +26,7 @@ from doc_pipeline.observability import get_logger, get_metrics, setup_logging
 from doc_pipeline.observability.worker_metrics import WorkerMetricsPusher
 from doc_pipeline.ocr import OCREngine
 from doc_pipeline.preprocessing import OrientationCorrector
-from doc_pipeline.schemas import CNHData, DocumentType, ExtractionResult, RGData
+from doc_pipeline.schemas import CINData, CNHData, DocumentType, ExtractionResult, RGData
 from doc_pipeline.shared import (
     DeliveryService,
     InferenceClient,
@@ -358,6 +358,10 @@ class DocumentWorker:
         # Build ExtractionResult from dict
         if doc_type.is_rg:
             data = RGData(**{k: v for k, v in extraction_data.items() if k in RGData.model_fields})
+        elif doc_type.is_cin:
+            data = CINData(
+                **{k: v for k, v in extraction_data.items() if k in CINData.model_fields}
+            )
         else:
             data = CNHData(
                 **{k: v for k, v in extraction_data.items() if k in CNHData.model_fields}
@@ -367,7 +371,7 @@ class DocumentWorker:
             document_type=doc_type,
             data=data,
             raw_text=reply.get("raw_response"),
-            backend="remote-vlm" if backend != "hybrid" else "remote-hybrid",
+            backend="paneas_v2",
         )
 
     async def _process_job(self, job: JobContext) -> None:
@@ -588,7 +592,7 @@ class DocumentWorker:
 
         except Exception as e:
             # Record error
-            job.mark_completed(error=str(e))
+            job.mark_completed(error=str(e) or f"{type(e).__name__}: timeout")
             self.metrics.jobs_processed.labels(
                 operation=job.operation,
                 status="error",

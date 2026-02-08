@@ -22,12 +22,13 @@ except ImportError:
 
 from .pipeline import DocumentPipeline
 from .schemas import (
-    DocumentType,
-    RGData,
+    CINData,
     CNHData,
     ClassificationResult,
+    DocumentType,
     ExtractionResult,
     PipelineResult,
+    RGData,
 )
 
 __all__ = [
@@ -35,6 +36,7 @@ __all__ = [
     "DocumentType",
     "RGData",
     "CNHData",
+    "CINData",
     "ClassificationResult",
     "ExtractionResult",
     "PipelineResult",

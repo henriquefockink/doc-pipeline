@@ -59,15 +59,11 @@ class DeliveryService:
             return False
 
     async def _deliver_sync(self, job: JobContext) -> bool:
-        """Deliver result via Redis Pub/Sub for sync mode."""
+        """Deliver result via Redis cache for sync polling."""
         try:
             result_payload = self._build_result_payload(job)
             result_json = json.dumps(result_payload)
 
-            # Publish to channel
-            await self._queue.publish_result(job.request_id, result_json)
-
-            # Also cache for potential polling
             await self._queue.cache_result(job.request_id, result_json)
 
             logger.info(

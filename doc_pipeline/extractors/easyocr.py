@@ -11,7 +11,7 @@ from pathlib import Path
 from PIL import Image
 
 from ..ocr.engine import OCREngine
-from ..schemas import CNHData, RGData
+from ..schemas import CINData, CNHData, RGData
 from .base import BaseExtractor
 
 
@@ -193,6 +193,53 @@ class EasyOCRExtractor(BaseExtractor):
             orgao_expedidor=data.get("orgao_expedidor"),
         )
 
+    def _parse_cin_from_text(self, text: str) -> dict:
+        """Parseia campos de CIN do texto extraído (mesmos campos do RG, sem número de RG)."""
+        data = {}
+        lines = text.split("\n")
+
+        for i, line in enumerate(lines):
+            line_lower = line.lower().strip()
+
+            # Nome - geralmente após "NOME" ou é a primeira linha grande
+            if "nome" in line_lower and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                if next_line and len(next_line) > 5:
+                    data["nome"] = next_line
+
+            # Filiação
+            if "filiação" in line_lower or "pai" in line_lower or "mae" in line_lower:
+                if i + 1 < len(lines):
+                    data["nome_pai"] = lines[i + 1].strip()
+                if i + 2 < len(lines):
+                    data["nome_mae"] = lines[i + 2].strip()
+
+            # Data de nascimento - formato DD/MM/AAAA
+            date_match = re.search(r"(\d{2}/\d{2}/\d{4})", line)
+            if date_match:
+                if "nascimento" in line_lower or "nasc" in line_lower:
+                    data["data_nascimento"] = date_match.group(1)
+                elif "expedição" in line_lower or "exped" in line_lower:
+                    data["data_expedicao"] = date_match.group(1)
+
+            # CPF
+            cpf_match = re.search(r"(\d{3}\.\d{3}\.\d{3}-\d{2})", line)
+            if cpf_match:
+                data["cpf"] = cpf_match.group(1)
+
+            # Naturalidade
+            if "naturalidade" in line_lower or "natural" in line_lower:
+                if i + 1 < len(lines):
+                    data["naturalidade"] = lines[i + 1].strip()
+
+            # Órgão expedidor
+            if "ssp" in line_lower or "secretaria" in line_lower:
+                org_match = re.search(r"SSP[\-/]?[A-Z]{2}", line.upper())
+                if org_match:
+                    data["orgao_expedidor"] = org_match.group(0)
+
+        return data
+
     def extract_cnh(self, image: str | Path | Image.Image) -> CNHData:
         """Extrai dados de uma CNH usando OCR."""
         text = self.extract_text(image)
@@ -208,4 +255,20 @@ class EasyOCRExtractor(BaseExtractor):
             categoria=data.get("categoria"),
             observacoes=data.get("observacoes"),
             primeira_habilitacao=data.get("primeira_habilitacao"),
+        )
+
+    def extract_cin(self, image: str | Path | Image.Image) -> CINData:
+        """Extrai dados de uma CIN usando OCR."""
+        text = self.extract_text(image)
+        data = self._parse_cin_from_text(text)
+
+        return CINData(
+            nome=data.get("nome"),
+            nome_pai=data.get("nome_pai"),
+            nome_mae=data.get("nome_mae"),
+            data_nascimento=data.get("data_nascimento"),
+            naturalidade=data.get("naturalidade"),
+            cpf=data.get("cpf"),
+            data_expedicao=data.get("data_expedicao"),
+            orgao_expedidor=data.get("orgao_expedidor"),
         )

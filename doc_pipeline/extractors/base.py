@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..schemas import CNHData, DocumentType, ExtractionResult, RGData
+from ..schemas import CINData, CNHData, DocumentType, ExtractionResult, RGData
 
 
 class BaseExtractor(ABC):
@@ -64,6 +64,19 @@ class BaseExtractor(ABC):
         """
         pass
 
+    @abstractmethod
+    def extract_cin(self, image: str | Path | Image.Image) -> CINData:
+        """
+        Extrai dados de uma CIN.
+
+        Args:
+            image: Imagem da CIN
+
+        Returns:
+            CINData com campos extraídos
+        """
+        pass
+
     def extract(
         self, image: str | Path | Image.Image, document_type: DocumentType
     ) -> ExtractionResult:
@@ -81,13 +94,15 @@ class BaseExtractor(ABC):
             data = self.extract_rg(image)
         elif document_type.is_cnh:
             data = self.extract_cnh(image)
+        elif document_type.is_cin:
+            data = self.extract_cin(image)
         else:
             raise ValueError(f"Tipo de documento não suportado: {document_type}")
 
         return ExtractionResult(
             document_type=document_type,
             data=data,
-            backend="paneas_v1",
+            backend="paneas_v2",
         )
 
     def _load_image(self, image: str | Path | Image.Image) -> Image.Image:

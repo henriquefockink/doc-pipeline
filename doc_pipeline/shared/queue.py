@@ -39,11 +39,13 @@ class QueueService:
         """Connect to Redis."""
         if self._redis is None:
             settings = get_settings()
-            self._redis = redis.from_url(
+            pool = redis.BlockingConnectionPool.from_url(
                 self._redis_url,
                 max_connections=settings.redis_max_connections,
+                timeout=5,  # wait up to 5s for a free connection
                 decode_responses=True,
             )
+            self._redis = redis.Redis(connection_pool=pool)
             logger.info("redis_connected", url=self._redis_url.split("@")[-1])
 
     async def close(self) -> None:

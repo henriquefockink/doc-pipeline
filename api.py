@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 from enum import Enum
 from typing import Annotated
 
+import redis.exceptions
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import JSONResponse
 from PIL import Image
@@ -65,12 +66,24 @@ def get_rate_limit_key(request: Request) -> str:
         return f"apikey:{api_key[:8]}"  # Use first 8 chars of API key
     return get_remote_address(request)
 
-# Create limiter with Redis backend for distributed rate limiting
-limiter = Limiter(
-    key_func=get_rate_limit_key,
-    storage_uri=settings.redis_url,
-    enabled=settings.rate_limit_enabled,
-)
+# Create limiter — only use Redis backend when rate limiting is actually enabled.
+# When disabled, use memory:// to avoid creating a separate Redis connection pool
+# that can exhaust connections under high concurrency.
+if settings.rate_limit_enabled:
+    limiter = Limiter(
+        key_func=get_rate_limit_key,
+        storage_uri=settings.redis_url,
+        storage_options={"max_connections": settings.redis_max_connections},
+        swallow_errors=True,
+        in_memory_fallback_enabled=True,
+        enabled=True,
+    )
+else:
+    limiter = Limiter(
+        key_func=get_rate_limit_key,
+        storage_uri="memory://",
+        enabled=False,
+    )
 
 
 class DeliveryMode(str, Enum):
@@ -135,6 +148,7 @@ app = FastAPI(
 # Rate limiting setup
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
 
 # Adiciona middleware de métricas (api_only=True filtra apenas endpoints da API)
 app.add_middleware(PrometheusMiddleware)
@@ -232,43 +246,27 @@ async def save_temp_file(upload_file: UploadFile, allowed_extensions: set[str]) 
 
 
 async def wait_for_result(request_id: str, timeout: float) -> dict:
-    """Wait for job result via Redis Pub/Sub."""
+    """Wait for job result via Redis polling."""
     if queue_service is None:
         raise RuntimeError("Queue service not connected")
 
-    from doc_pipeline.shared.constants import result_channel
+    poll_interval = 0.3  # 300ms between polls
+    end_time = asyncio.get_event_loop().time() + timeout
 
-    channel = result_channel(request_id)
-    pubsub = queue_service.redis.pubsub()
-
-    try:
-        await pubsub.subscribe(channel)
-
-        # Wait for message with timeout
-        end_time = asyncio.get_event_loop().time() + timeout
-        while True:
-            remaining = end_time - asyncio.get_event_loop().time()
-            if remaining <= 0:
-                raise asyncio.TimeoutError()
-
-            message = await asyncio.wait_for(
-                pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0),
-                timeout=min(remaining, 5.0),
-            )
-
-            if message and message["type"] == "message":
-                return json.loads(message["data"])
-
-    except asyncio.TimeoutError:
-        # Check if result was cached (job completed but we missed the pubsub)
-        cached = await queue_service.get_cached_result(request_id)
+    while True:
+        try:
+            cached = await queue_service.get_cached_result(request_id)
+        except Exception as e:
+            logger.error("poll_redis_error", error=str(e), error_type=type(e).__name__, request_id=request_id)
+            raise RuntimeError(str(e)) from e
         if cached:
             return json.loads(cached)
-        raise
 
-    finally:
-        await pubsub.unsubscribe(channel)
-        await pubsub.aclose()
+        remaining = end_time - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError()
+
+        await asyncio.sleep(min(poll_interval, remaining))
 
 
 @app.get("/metrics")
@@ -433,16 +431,22 @@ async def classify(
             endpoint="/classify",
             status="503",
         ).inc()
+        logger.warning("classify_queue_full", error=str(e), client=client)
         raise HTTPException(status_code=503, detail=str(e))
 
     except HTTPException:
         raise
 
+    except (ConnectionError, redis.exceptions.ConnectionError) as e:
+        metrics.requests_by_client.labels(client=client, endpoint="/classify", status="503").inc()
+        logger.error("classify_connection_error", error=str(e), client=client)
+        raise HTTPException(status_code=503, detail=str(e))
+
     except Exception as e:
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/classify",
-            status="400",
+            status="500",
         ).inc()
         logger.error(
             "classify_error",
@@ -451,7 +455,7 @@ async def classify(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/extract")
@@ -492,7 +496,9 @@ async def extract(
     metrics = get_metrics()
     client = auth.client_name or "unknown"
 
-    # Validate document type
+    # Validate document type (map legacy "cni_" prefix to "cin_")
+    if doc_type and doc_type.startswith("cni_"):
+        doc_type = doc_type.replace("cni_", "cin_", 1)
     try:
         document_type = DocumentType(doc_type)
     except ValueError:
@@ -588,16 +594,22 @@ async def extract(
             endpoint="/extract",
             status="503",
         ).inc()
+        logger.warning("extract_queue_full", error=str(e), client=client)
         raise HTTPException(status_code=503, detail=str(e))
 
     except HTTPException:
         raise
 
+    except (ConnectionError, redis.exceptions.ConnectionError) as e:
+        metrics.requests_by_client.labels(client=client, endpoint="/extract", status="503").inc()
+        logger.error("extract_connection_error", error=str(e), client=client)
+        raise HTTPException(status_code=503, detail=str(e))
+
     except Exception as e:
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/extract",
-            status="400",
+            status="500",
         ).inc()
         logger.error(
             "extract_error",
@@ -607,7 +619,7 @@ async def extract(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/process")
@@ -727,16 +739,22 @@ async def process(
             endpoint="/process",
             status="503",
         ).inc()
+        logger.warning("process_queue_full", error=str(e), client=client)
         raise HTTPException(status_code=503, detail=str(e))
 
     except HTTPException:
         raise
 
+    except (ConnectionError, redis.exceptions.ConnectionError) as e:
+        metrics.requests_by_client.labels(client=client, endpoint="/process", status="503").inc()
+        logger.error("process_connection_error", error=str(e), client=client)
+        raise HTTPException(status_code=503, detail=str(e))
+
     except Exception as e:
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/process",
-            status="400",
+            status="500",
         ).inc()
         logger.error(
             "process_error",
@@ -745,7 +763,7 @@ async def process(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # OCR allowed file extensions
@@ -851,16 +869,22 @@ async def ocr(
             endpoint="/ocr",
             status="503",
         ).inc()
+        logger.warning("ocr_queue_full", error=str(e), client=client)
         raise HTTPException(status_code=503, detail=str(e))
 
     except HTTPException:
         raise
 
+    except (ConnectionError, redis.exceptions.ConnectionError) as e:
+        metrics.requests_by_client.labels(client=client, endpoint="/ocr", status="503").inc()
+        logger.error("ocr_connection_error", error=str(e), client=client)
+        raise HTTPException(status_code=503, detail=str(e))
+
     except Exception as e:
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/ocr",
-            status="400",
+            status="500",
         ).inc()
         logger.error(
             "ocr_error",
@@ -869,7 +893,7 @@ async def ocr(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/jobs/{request_id}/status")

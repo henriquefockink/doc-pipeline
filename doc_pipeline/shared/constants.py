@@ -36,3 +36,11 @@ def result_cache_key(request_id: str) -> str:
 def inference_reply_channel(inference_id: str) -> str:
     """Return the Pub/Sub channel name for an inference reply."""
     return f"inference:reply:{inference_id}"
+
+
+INFERENCE_REPLY_TTL = 120  # 2 minutes - TTL for cached inference replies
+
+
+def inference_reply_key(inference_id: str) -> str:
+    """Return the Redis key for caching an inference reply (polling mode)."""
+    return f"inference:result:{inference_id}"

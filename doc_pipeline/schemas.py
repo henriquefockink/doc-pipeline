@@ -22,6 +22,12 @@ class DocumentType(str, Enum):
     CNH_FRENTE = "cnh_frente"
     CNH_VERSO = "cnh_verso"
 
+    # CIN variants
+    CIN_ABERTA = "cin_aberta"
+    CIN_DIGITAL = "cin_digital"
+    CIN_FRENTE = "cin_frente"
+    CIN_VERSO = "cin_verso"
+
     @property
     def is_rg(self) -> bool:
         """Verifica se é um documento RG."""
@@ -33,9 +39,19 @@ class DocumentType(str, Enum):
         return self.value.startswith("cnh_")
 
     @property
+    def is_cin(self) -> bool:
+        """Verifica se é um documento CIN."""
+        return self.value.startswith("cin_")
+
+    @property
     def base_type(self) -> str:
-        """Retorna o tipo base (rg ou cnh)."""
-        return "rg" if self.is_rg else "cnh"
+        """Retorna o tipo base (rg, cnh ou cin)."""
+        if self.is_rg:
+            return "rg"
+        elif self.is_cnh:
+            return "cnh"
+        else:
+            return "cin"
 
 
 class RGData(BaseModel):
@@ -89,6 +105,27 @@ class CNHData(BaseModel):
     )
 
 
+class CINData(BaseModel):
+    """Dados extraídos de uma CIN (Carteira de Identidade Nacional)."""
+
+    nome: str | None = Field(default=None, description="Nome completo")
+    nome_pai: str | None = Field(default=None, description="Nome do pai")
+    nome_mae: str | None = Field(default=None, description="Nome da mãe")
+    data_nascimento: str | None = Field(
+        default=None, description="Data de nascimento (DD/MM/AAAA)"
+    )
+    naturalidade: str | None = Field(
+        default=None, description="Cidade/Estado de nascimento"
+    )
+    cpf: str | None = Field(default=None, description="CPF (###.###.###-##)")
+    data_expedicao: str | None = Field(
+        default=None, description="Data de expedição (DD/MM/AAAA)"
+    )
+    orgao_expedidor: str | None = Field(
+        default=None, description="Órgão expedidor (ex: SSP-SP)"
+    )
+
+
 class ImageCorrection(BaseModel):
     """Information about image preprocessing corrections applied."""
 
@@ -119,7 +156,7 @@ class ExtractionResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     document_type: DocumentType = Field(description="Tipo do documento")
-    data: RGData | CNHData = Field(description="Dados extraídos")
+    data: RGData | CNHData | CINData = Field(description="Dados extraídos")
     raw_text: str | None = Field(
         default=None, description="Texto bruto extraído (para debug)"
     )
@@ -146,7 +183,7 @@ class PipelineResult(BaseModel):
         return self.classification.document_type
 
     @property
-    def data(self) -> RGData | CNHData | None:
+    def data(self) -> RGData | CNHData | CINData | None:
         """Atalho para os dados extraídos."""
         return self.extraction.data if self.extraction else None
 

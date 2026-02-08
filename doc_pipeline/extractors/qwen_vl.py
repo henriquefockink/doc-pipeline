@@ -8,8 +8,8 @@ from pathlib import Path
 
 from PIL import Image
 
-from ..prompts import CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
-from ..schemas import CNHData, RGData
+from ..prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
+from ..schemas import CINData, CNHData, RGData
 from ..utils import fix_cpf_rg_swap
 from .base import BaseExtractor
 
@@ -262,4 +262,24 @@ class QwenVLExtractor(BaseExtractor):
             categoria=data.get("categoria"),
             observacoes=data.get("observacoes"),
             primeira_habilitacao=data.get("primeira_habilitacao"),
+        )
+
+    def extract_cin(self, image: str | Path | Image.Image) -> CINData:
+        """Extrai dados de uma CIN."""
+        img = self._load_image(image)
+        response = self._generate(img, CIN_EXTRACTION_PROMPT)
+        data = self._parse_json(response)
+
+        # Fix CPF swap and normalize CPF
+        data = fix_cpf_rg_swap(data)
+
+        return CINData(
+            nome=data.get("nome"),
+            nome_pai=data.get("nome_pai"),
+            nome_mae=data.get("nome_mae"),
+            data_nascimento=data.get("data_nascimento"),
+            naturalidade=data.get("naturalidade"),
+            cpf=data.get("cpf"),
+            data_expedicao=data.get("data_expedicao"),
+            orgao_expedidor=data.get("orgao_expedidor"),
         )

@@ -25,7 +25,7 @@ services:
       - DOC_PIPELINE_LOG_JSON=true
       - DOC_PIPELINE_LOG_LEVEL=INFO
       # Redis pool settings
-      - DOC_PIPELINE_REDIS_MAX_CONNECTIONS=${DOC_PIPELINE_REDIS_MAX_CONNECTIONS:-100}
+      - DOC_PIPELINE_REDIS_MAX_CONNECTIONS=${DOC_PIPELINE_REDIS_MAX_CONNECTIONS:-500}
       # Rate limiting
       - DOC_PIPELINE_RATE_LIMIT_ENABLED=${DOC_PIPELINE_RATE_LIMIT_ENABLED:-true}
       - DOC_PIPELINE_RATE_LIMIT_REQUESTS=${DOC_PIPELINE_RATE_LIMIT_REQUESTS:-30}
@@ -96,7 +96,7 @@ services:
       start_period: 180s
     restart: unless-stopped
 
-  # Worker DocID 2 - inicia sob demanda pelo autoscaler
+  # Worker DocID 2 - sempre ativo
   worker-docid-2:
     build:
       context: .
@@ -140,10 +140,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
-    profiles:
-      - scale
+    restart: unless-stopped
 
-  # Worker DocID 3 - inicia sob demanda pelo autoscaler
+  # Worker DocID 3 - sempre ativo
   worker-docid-3:
     build:
       context: .
@@ -187,10 +186,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
-    profiles:
-      - scale
+    restart: unless-stopped
 
-  # Worker DocID 4 - inicia sob demanda pelo autoscaler
+  # Worker DocID 4 - sempre ativo
   worker-docid-4:
     build:
       context: .
@@ -234,10 +232,9 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
-    profiles:
-      - scale
+    restart: unless-stopped
 
-  # Worker DocID 5 - inicia sob demanda pelo autoscaler
+  # Worker DocID 5 - sempre ativo
   worker-docid-5:
     build:
       context: .
@@ -281,8 +278,7 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
-    profiles:
-      - scale
+    restart: unless-stopped
 
   # Worker DocID 6 - inicia sob demanda pelo autoscaler
   worker-docid-6:
