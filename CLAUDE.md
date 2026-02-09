@@ -124,32 +124,20 @@ Workers support three backends (set via `DOC_PIPELINE_EXTRACTOR_BACKEND` or per-
 |---------|------|-------------|
 | API | 9000 | REST API (FastAPI) |
 | DocID workers 1-5 | 9010, 9012, 9014, 9016, 9018 | Worker health/metrics |
-| DocID workers 6-8 | 9022, 9024, 9026 | Scale-profile workers |
 | OCR worker | 9011 | OCR worker health/metrics |
 | Inference server | 9020 | Centralized VLM batching |
 
 ## Docker Deployment
 
 ```bash
-# Core services (Redis + API + Worker 1 + Inference Server)
+# All services (Redis + API + 5 DocID workers + Inference Server + OCR worker)
 docker compose up -d
-
-# ALL workers including scale-profile workers 6-8
-docker compose --profile scale up -d
-
-# Specific scale worker
-docker compose --profile scale up -d worker-docid-6
 
 # Rebuild after code changes
 docker compose build && docker compose up -d
-
-# After changing autoscaler script
-docker compose build autoscaler && docker compose up -d autoscaler
 ```
 
-**IMPORTANT**: Workers 6-8 use `profiles: [scale]` — you MUST pass `--profile scale` to manage them.
-
-Services: **redis** (queue), **api** (stateless, no GPU), **inference-server** (batched VLM, GPU ~14GB), **worker-docid-1** (always on, ~800MB), **worker-docid-2 to 8** (managed by autoscaler), **worker-ocr**, **autoscaler** (monitors queue, scales workers)
+Services: **redis** (queue), **api** (stateless, no GPU), **inference-server** (batched VLM, GPU ~14GB), **worker-docid-1 to 5** (always on, ~800MB each, `restart: unless-stopped`), **worker-ocr**
 
 ### Inference Server
 
@@ -161,16 +149,6 @@ The inference server (`inference_server.py`) collects VLM requests into batches 
 5. Workers poll their reply key
 
 Config: `INFERENCE_BATCH_SIZE=8`, `WORKER_CONCURRENT_JOBS=4`, `INFERENCE_TIMEOUT=30s`
-
-### Autoscaler
-
-Bash script (`scripts/autoscale.sh`) running as Docker container:
-- Monitors `queue:doc:documents` depth via Redis
-- Scales workers up when queue ≥ `SCALE_UP_THRESHOLD` (default 5)
-- Scales down after queue empty for `SCALE_DOWN_DELAY` (default 120s)
-- Never stops `worker-docid-1`; manages workers 1-8
-- Respects `/warmup` API warmup requests
-- Exports metrics to `/tmp/autoscaler-metrics/` (mounted as volume)
 
 ## Configuration
 
@@ -222,7 +200,7 @@ Doc Pipeline (uid: bfbjyfdf0uhhcf)
 ./monitoring/scripts/create-alerts.sh
 ```
 
-Files: dashboards in `monitoring/grafana/dashboards/`, alerts in `monitoring/grafana/alerts/`
+Scripts are the source of truth for all alerts and dashboards. Alerts use `create-alerts.sh` with deterministic UIDs (`dp-*` prefix) and delete-before-create for idempotency.
 
 ### Adding a New Worker to Monitoring
 
