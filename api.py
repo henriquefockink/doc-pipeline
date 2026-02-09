@@ -289,7 +289,7 @@ async def metrics():
     from fastapi.responses import PlainTextResponse
     from prometheus_client import CONTENT_TYPE_LATEST
 
-    # Get base metrics (API + autoscaler)
+    # Get base API metrics
     base_response = metrics_endpoint()
     content = base_response.body
 

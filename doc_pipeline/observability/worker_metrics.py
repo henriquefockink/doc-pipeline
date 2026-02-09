@@ -126,6 +126,17 @@ def format_aggregated_metrics(workers_data: dict[str, dict]) -> str:
                     "value": sample["value"],
                 })
 
+    # Emit worker_up gauge (1 for each worker with active metrics in Redis)
+    lines.append("# HELP doc_pipeline_worker_up Whether the worker is alive (1=up, absent=down)")
+    lines.append("# TYPE doc_pipeline_worker_up gauge")
+    for worker_id in sorted(workers_data):
+        ts = workers_data[worker_id].get("timestamp", 0)
+        age = time.time() - ts if ts else 999
+        # Only mark as up if metrics are fresh (< 2x TTL)
+        val = 1 if age < WORKER_METRICS_TTL * 2 else 0
+        lines.append(f'doc_pipeline_worker_up{{worker_id="{worker_id}"}} {val}')
+    lines.append("")
+
     # Format as Prometheus text
     for metric_name, metric_data in sorted(all_metrics.items()):
         # HELP and TYPE lines

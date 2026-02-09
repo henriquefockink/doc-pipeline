@@ -38,8 +38,6 @@ services:
     volumes:
       # Shared temp directory for images between API and worker
       - temp-images:/tmp/doc-pipeline
-      # Autoscaler metrics (read-only, from shared volume)
-      - autoscaler-metrics:/tmp/autoscaler-metrics:ro
     depends_on:
       redis:
         condition: service_healthy
@@ -280,147 +278,6 @@ services:
       start_period: 180s
     restart: unless-stopped
 
-  # Worker DocID 6 - inicia sob demanda pelo autoscaler
-  worker-docid-6:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker-docid
-    container_name: doc-pipeline-worker-docid-6
-    ports:
-      - "9022:9010"
-    environment:
-      - WORKER_ID=docid-6
-      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
-      - DOC_PIPELINE_WARMUP_ON_START=true
-      - DOC_PIPELINE_LOG_JSON=true
-      - DOC_PIPELINE_LOG_LEVEL=INFO
-      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
-      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
-      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
-      - DOC_PIPELINE_EXTRACTOR_MODEL_QWEN=${DOC_PIPELINE_EXTRACTOR_MODEL_QWEN:-Qwen/Qwen2.5-VL-3B-Instruct}
-      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
-      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
-      - DOC_PIPELINE_INFERENCE_SERVER_ENABLED=${DOC_PIPELINE_INFERENCE_SERVER_ENABLED:-false}
-      - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
-      - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
-      - HF_TOKEN=${HF_TOKEN:-}
-    volumes:
-      - temp-images:/tmp/doc-pipeline
-      - model-cache:/root/.cache/huggingface
-      - ./models:/app/models:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 180s
-    profiles:
-      - scale
-
-  # Worker DocID 7 - inicia sob demanda pelo autoscaler
-  worker-docid-7:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker-docid
-    container_name: doc-pipeline-worker-docid-7
-    ports:
-      - "9024:9010"
-    environment:
-      - WORKER_ID=docid-7
-      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
-      - DOC_PIPELINE_WARMUP_ON_START=true
-      - DOC_PIPELINE_LOG_JSON=true
-      - DOC_PIPELINE_LOG_LEVEL=INFO
-      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
-      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
-      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
-      - DOC_PIPELINE_EXTRACTOR_MODEL_QWEN=${DOC_PIPELINE_EXTRACTOR_MODEL_QWEN:-Qwen/Qwen2.5-VL-3B-Instruct}
-      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
-      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
-      - DOC_PIPELINE_INFERENCE_SERVER_ENABLED=${DOC_PIPELINE_INFERENCE_SERVER_ENABLED:-false}
-      - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
-      - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
-      - HF_TOKEN=${HF_TOKEN:-}
-    volumes:
-      - temp-images:/tmp/doc-pipeline
-      - model-cache:/root/.cache/huggingface
-      - ./models:/app/models:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 180s
-    profiles:
-      - scale
-
-  # Worker DocID 8 - inicia sob demanda pelo autoscaler
-  worker-docid-8:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker-docid
-    container_name: doc-pipeline-worker-docid-8
-    ports:
-      - "9026:9010"
-    environment:
-      - WORKER_ID=docid-8
-      - DOC_PIPELINE_REDIS_URL=redis://redis:6379/0
-      - DOC_PIPELINE_WARMUP_ON_START=true
-      - DOC_PIPELINE_LOG_JSON=true
-      - DOC_PIPELINE_LOG_LEVEL=INFO
-      - DOC_PIPELINE_WORKER_HEALTH_PORT=9010
-      - DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/app/models/classifier.pth
-      - DOC_PIPELINE_EXTRACTOR_BACKEND=${DOC_PIPELINE_EXTRACTOR_BACKEND:-qwen-vl}
-      - DOC_PIPELINE_EXTRACTOR_MODEL_QWEN=${DOC_PIPELINE_EXTRACTOR_MODEL_QWEN:-Qwen/Qwen2.5-VL-3B-Instruct}
-      - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
-      - DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
-      - DOC_PIPELINE_INFERENCE_SERVER_ENABLED=${DOC_PIPELINE_INFERENCE_SERVER_ENABLED:-false}
-      - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
-      - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
-      - HF_TOKEN=${HF_TOKEN:-}
-    volumes:
-      - temp-images:/tmp/doc-pipeline
-      - model-cache:/root/.cache/huggingface
-      - ./models:/app/models:ro
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9010/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 180s
-    profiles:
-      - scale
-
   # Inference Server - single VLM instance shared by all workers
   inference-server:
     build:
@@ -500,42 +357,11 @@ services:
       start_period: 60s
     restart: unless-stopped
 
-  # Autoscaler - scales workers based on queue depth
-  autoscaler:
-    build:
-      context: .
-      dockerfile: Dockerfile.autoscaler
-    environment:
-      - MIN_WORKERS=${MIN_WORKERS:-1}
-      - MAX_WORKERS=${MAX_WORKERS:-5}
-      - SCALE_UP_THRESHOLD=${SCALE_UP_THRESHOLD:-5}
-      - SCALE_DOWN_DELAY=${SCALE_DOWN_DELAY:-120}
-      - CHECK_INTERVAL=${CHECK_INTERVAL:-10}
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - METRICS_FILE=/metrics/doc_pipeline_autoscaler.prom
-      # Docker compose project name (must match)
-      - COMPOSE_PROJECT_NAME=doc-pipeline
-    volumes:
-      # Docker socket to control containers
-      - /var/run/docker.sock:/var/run/docker.sock
-      # Docker compose file + env for scaling commands
-      - ./docker-compose.yml:/app/docker-compose.yml:ro
-      - ./.env:/app/.env:ro
-      # Shared metrics volume
-      - autoscaler-metrics:/metrics
-    working_dir: /app
-    depends_on:
-      redis:
-        condition: service_healthy
-    restart: unless-stopped
-
 volumes:
   redis-data:
   temp-images:
   model-cache:
   easyocr-cache:
-  autoscaler-metrics:
 
 networks:
   default:

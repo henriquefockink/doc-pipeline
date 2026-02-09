@@ -318,10 +318,16 @@ echo "============================================"
 # DocID Worker Alerts
 # ============================================================
 
-# 16. DocID Worker Down
+# 16. DocID Worker Down (all workers dead — uses Redis heartbeat TTL=60s)
+# noDataState=Alerting because when all workers die, metric disappears entirely
 create_alert_simple "dp-docid-worker-down" "DocID Worker Down" "$WORKERS_ALERTS_UID" \
-    'count(up{job=\"doc-pipeline-api\"} == 1) or vector(0)' \
-    "lt" "1" "2m" "critical" "DocID Worker is down" "All DocID workers are unreachable" '"worker":"docid"'
+    'max(doc_pipeline_worker_up{worker_id=~\"docid.*\"}) or vector(0)' \
+    "lt" "1" "2m" "critical" "DocID Worker is down" "All DocID workers are unreachable" '"worker":"docid"' "300" "Alerting"
+
+# 16b. DocID Workers Degraded (fewer than 5 workers alive)
+create_alert_simple "dp-docid-workers-degraded" "DocID Workers Degraded" "$WORKERS_ALERTS_UID" \
+    'count(doc_pipeline_worker_up{worker_id=~\"docid.*\"} == 1) or vector(0)' \
+    "lt" "5" "5m" "warning" "DocID workers degraded" "Fewer than 5 DocID workers are running - Docker failed to restart" '"worker":"docid"' "300" "Alerting"
 
 # 17. DocID High Error Rate
 create_alert_math "dp-docid-error-rate" "DocID High Error Rate" "$WORKERS_ALERTS_UID" '[
@@ -352,9 +358,10 @@ create_alert_simple "dp-docid-low-confidence" "DocID Low Confidence" "$WORKERS_A
 # ============================================================
 
 # 21. OCR Worker Down
+# noDataState=Alerting because if target disappears, worker is definitely down
 create_alert_simple "dp-ocr-worker-down" "OCR Worker Down" "$WORKERS_ALERTS_UID" \
     'up{job=\"doc-pipeline-worker-ocr\"}' \
-    "lt" "1" "2m" "critical" "OCR Worker is down" "The OCR worker has been unreachable for more than 2 minutes" '"worker":"ocr"'
+    "lt" "1" "2m" "critical" "OCR Worker is down" "The OCR worker has been unreachable for more than 2 minutes" '"worker":"ocr"' "300" "Alerting"
 
 # 22. OCR High Error Rate
 create_alert_math "dp-ocr-error-rate" "OCR High Error Rate" "$WORKERS_ALERTS_UID" '[

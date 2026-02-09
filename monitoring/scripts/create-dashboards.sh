@@ -99,51 +99,36 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
   "time": {"from": "now-1h", "to": "now"},
   "panels": [
 
-    {"type": "row", "title": "⚡ Workers & Scaling", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false},
+    {"type": "row", "title": "⚡ Workers & Queue", "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "collapsed": false},
 
     {"id": 7, "type": "stat", "title": "Workers Ativos", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
         "defaults": {
-          "mappings": [
-            {"type": "value", "options": {"0": {"text": "0", "color": "text"}}},
-            {"type": "value", "options": {"1": {"text": "1", "color": "green"}}},
-            {"type": "value", "options": {"2": {"text": "2", "color": "yellow"}}},
-            {"type": "value", "options": {"3": {"text": "3", "color": "orange"}}},
-            {"type": "value", "options": {"4": {"text": "4", "color": "light-red"}}},
-            {"type": "value", "options": {"5": {"text": "5", "color": "red"}}}
-          ],
-          "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]},
-          "color": {"mode": "fixed", "fixedColor": "text"},
-          "unit": "none"
+          "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 3}, {"color": "green", "value": 5}]},
+          "color": {"mode": "thresholds"},
+          "unit": "none", "min": 0, "max": 5
         },
         "overrides": []
       },
       "options": {"colorMode": "value", "graphMode": "none", "reduceOptions": {"calcs": ["lastNotNull"]}, "textMode": "value", "text": {"titleSize": 20, "valueSize": 72}},
-      "targets": [{"expr": "max(doc_pipeline_autoscaler_workers_current) or vector(0)", "legendFormat": "Workers"}]},
+      "targets": [{"expr": "count(doc_pipeline_worker_up{worker_id=~\"docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"}]},
 
-    {"id": 9, "type": "timeseries", "title": "Scaling Events", "gridPos": {"h": 8, "w": 10, "x": 6, "y": 1},
+    {"id": 9, "type": "timeseries", "title": "Workers Ativos (historico)", "gridPos": {"h": 8, "w": 10, "x": 6, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {
-        "defaults": {"color": {"mode": "palette-classic"}, "min": 0, "max": 5, "custom": {"drawStyle": "line", "fillOpacity": 20, "pointSize": 8, "showPoints": "auto"}},
-        "overrides": [
-          {"matcher": {"id": "byName", "options": "Scale Up"}, "properties": [{"id": "color", "value": {"fixedColor": "green", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 5}]},
-          {"matcher": {"id": "byName", "options": "Scale Down"}, "properties": [{"id": "color", "value": {"fixedColor": "red", "mode": "fixed"}}, {"id": "custom.drawStyle", "value": "points"}, {"id": "custom.pointSize", "value": 5}]},
-          {"matcher": {"id": "byName", "options": "Workers"}, "properties": [{"id": "color", "value": {"fixedColor": "blue", "mode": "fixed"}}]}
-        ]
+        "defaults": {"color": {"mode": "fixed", "fixedColor": "blue"}, "min": 0, "max": 6, "custom": {"drawStyle": "line", "fillOpacity": 20}}
       },
       "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "list", "placement": "bottom"}},
       "targets": [
-        {"expr": "max(doc_pipeline_autoscaler_workers_current) or vector(0)", "legendFormat": "Workers"},
-        {"expr": "max(increase(doc_pipeline_autoscaler_scale_up_total[2m])) > 0 or vector(0)", "legendFormat": "Scale Up"},
-        {"expr": "max(increase(doc_pipeline_autoscaler_scale_down_total[2m])) > 0 or vector(0)", "legendFormat": "Scale Down"}
+        {"expr": "count(doc_pipeline_worker_up{worker_id=~\"docid.*\"} == 1) or vector(0)", "legendFormat": "DocID Workers"}
       ]},
 
     {"id": 1, "type": "stat", "title": "Queue", "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 15}]}, "unit": "none"}},
       "options": {"colorMode": "value", "graphMode": "area", "reduceOptions": {"calcs": ["lastNotNull"]}},
-      "targets": [{"expr": "max(doc_pipeline_autoscaler_queue_depth) or vector(0)", "legendFormat": "Queue"}]},
+      "targets": [{"expr": "max(doc_pipeline_queue_depth) or vector(0)", "legendFormat": "Queue"}]},
 
     {"id": 8, "type": "stat", "title": "Confidence", "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
@@ -188,9 +173,8 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "axisSoftMin": 0}}},
       "options": {"legend": {"calcs": ["lastNotNull", "max"], "displayMode": "table", "placement": "bottom"}},
       "targets": [
-        {"expr": "max(doc_pipeline_autoscaler_queue_depth) or vector(0)", "legendFormat": "Queue Depth"},
-        {"expr": "max(doc_pipeline_autoscaler_workers_current) or vector(0)", "legendFormat": "Workers"},
-        {"expr": "max(doc_pipeline_autoscaler_scale_threshold) or vector(5)", "legendFormat": "Scale Threshold"}
+        {"expr": "max(doc_pipeline_queue_depth) or vector(0)", "legendFormat": "Queue Depth"},
+        {"expr": "count(doc_pipeline_worker_up{worker_id=~\"docid.*\"} == 1) or vector(0)", "legendFormat": "Workers"}
       ]},
 
     {"id": 11, "type": "timeseries", "title": "Queue Wait Time", "gridPos": {"h": 4, "w": 12, "x": 0, "y": 14},
