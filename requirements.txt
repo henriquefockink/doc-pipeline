@@ -30,7 +30,6 @@ asyncpg>=0.29.0
 
 # Image processing
 pillow>=10.0.0
-python-doctr>=1.0.0
 pillow-heif>=0.16.0  # Suporte a HEIC/HEIF (iPhone) e AVIF
 
 # Redis queue

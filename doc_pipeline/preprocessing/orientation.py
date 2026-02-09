@@ -4,7 +4,6 @@ Image orientation detection and correction.
 Uses a combination of:
 - EXIF metadata
 - EasyOCR text box direction (for 90°/270° detection)
-- docTR page orientation classification (for 180° detection)
 """
 
 from dataclasses import dataclass
@@ -39,7 +38,7 @@ class OrientationResult:
     image: Image.Image
     was_corrected: bool
     rotation_applied: RotationAngle
-    correction_method: str | None  # "exif", "textbox_direction", "doctr", etc.
+    correction_method: str | None  # "exif", "text", "exif+text"
     confidence: float | None
 
     def to_dict(self) -> dict:
@@ -59,7 +58,6 @@ class OrientationCorrector:
     Strategy:
     1. Apply EXIF orientation (handles camera rotation metadata)
     2. EasyOCR text box direction for 90°/270° detection (~100ms)
-    3. docTR classification for 180° detection (~50ms)
     """
 
     def __init__(
@@ -67,54 +65,21 @@ class OrientationCorrector:
         use_text_detection: bool = True,
         device: str = "cuda:0",
         confidence_threshold: float = 0.3,
-        use_torch_compile: bool = False,
         ocr_engine=None,
     ):
         self.use_text_detection = use_text_detection
         self._device = device
         self._confidence_threshold = confidence_threshold
-        self._use_torch_compile = use_torch_compile
-        self._predictor = None
         self._ocr_engine = ocr_engine
 
     def set_ocr_engine(self, ocr_engine) -> None:
         """Set OCR engine for text box direction detection."""
         self._ocr_engine = ocr_engine
 
-    def _get_predictor(self):
-        """Get or lazy-load the docTR page orientation predictor."""
-        if self._predictor is None:
-            import torch
-            from doctr.models import page_orientation_predictor
-
-            logger.info(
-                "loading_orientation_predictor",
-                device=self._device,
-                torch_compile=self._use_torch_compile,
-            )
-
-            self._predictor = page_orientation_predictor(
-                arch="mobilenet_v3_small_page_orientation",
-                pretrained=True,
-            )
-
-            device = torch.device(self._device)
-            self._predictor.model = self._predictor.model.to(device)
-
-            if self._use_torch_compile:
-                self._predictor.model = torch.compile(self._predictor.model)
-
-            self._predictor.model.eval()
-            logger.info("orientation_predictor_loaded", device=self._device)
-
-        return self._predictor
-
     def warmup(self) -> None:
         """Pre-load models and warm up CUDA kernels."""
         logger.info("orientation_warmup_start")
-        predictor = self._get_predictor()
-        dummy = (255 * np.random.rand(512, 512, 3)).astype(np.uint8)
-        predictor([dummy])
+        # EasyOCR warms up via its own warmup method; nothing extra needed here
         logger.info("orientation_warmup_complete")
 
     def correct(self, image: Image.Image) -> OrientationResult:
@@ -201,64 +166,27 @@ class OrientationCorrector:
         self, image: Image.Image
     ) -> tuple[Image.Image, RotationAngle, float | None]:
         """
-        Hybrid orientation detection:
-        1. EasyOCR text boxes for 90°/270° (avg box width/height ratio)
-        2. docTR single-pass for 180°
-
-        Falls back to docTR-only if no OCR engine is available.
+        Orientation detection via EasyOCR text boxes for 90°/270°
+        (avg box width/height ratio).
         """
         try:
-            corrected = image
-            total_angle = 0
-            confidence = None
+            if self._ocr_engine is None:
+                return image, RotationAngle.NONE, None
 
             img_array = np.array(image)
+            result_90 = self._detect_90_with_textboxes(img_array)
 
-            # Phase 1: 90° detection via text box direction
-            if self._ocr_engine is not None:
-                result_90 = self._detect_90_with_textboxes(img_array)
-                if result_90 is not None:
-                    rotation, pil_deg, conf = result_90
-                    corrected = image.rotate(pil_deg, expand=True)
-                    total_angle = rotation.value
-                    confidence = conf
-                    # Update array for phase 2
-                    img_array = np.array(corrected)
+            if result_90 is None:
+                return image, RotationAngle.NONE, None
 
-            # Phase 2: 180° detection via docTR
-            predictor = self._get_predictor()
-            _idxs, angles, confs = predictor([img_array])
-
-            logger.info(
-                "doctr_180_check",
-                predicted_angle=angles[0],
-                confidence=round(float(confs[0]), 4),
-                threshold=self._confidence_threshold,
-            )
-
-            if angles[0] == 180 and float(confs[0]) >= self._confidence_threshold:
-                corrected = corrected.rotate(180, expand=True)
-                total_angle = (total_angle + 180) % 360
-                confidence = float(confs[0])
-                logger.info(
-                    "orientation_180_detected",
-                    confidence=round(confidence, 4),
-                    method="doctr",
-                )
-
-            if total_angle == 0:
-                return image, RotationAngle.NONE, confidence
-
-            rotation = RotationAngle(total_angle)
-            return corrected, rotation, confidence
+            rotation, pil_deg, conf = result_90
+            corrected = image.rotate(pil_deg, expand=True)
+            return corrected, rotation, conf
 
         except Exception as e:
             logger.warning(
                 "text_orientation_detection_error", error=str(e), error_type=type(e).__name__
             )
-            import traceback
-
-            logger.warning("text_orientation_detection_traceback", tb=traceback.format_exc())
             return image, RotationAngle.NONE, None
 
     # ------------------------------------------------------------------

@@ -82,7 +82,6 @@ class DocumentWorker:
             use_text_detection=settings.orientation_enabled,
             device=settings.orientation_device or settings.classifier_device,
             confidence_threshold=settings.orientation_confidence_threshold,
-            use_torch_compile=settings.orientation_use_torch_compile,
         )
         # Inference client for remote VLM (when inference server is enabled)
         self._inference_client: InferenceClient | None = None

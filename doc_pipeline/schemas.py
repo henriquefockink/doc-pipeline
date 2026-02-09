@@ -134,10 +134,10 @@ class ImageCorrection(BaseModel):
         default=0, description="Rotation applied in degrees (0, 90, 180, 270)"
     )
     correction_method: str | None = Field(
-        default=None, description="Method used: 'exif', 'doctr_classification', or 'exif+doctr_classification'"
+        default=None, description="Method used: 'exif', 'text', or 'exif+text'"
     )
     confidence: float | None = Field(
-        default=None, description="Confidence of docTR orientation classification (if used)"
+        default=None, description="Confidence of orientation correction (if used)"
     )
 
 

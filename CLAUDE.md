@@ -47,14 +47,14 @@ pytest tests/test_foo.py -k "test_name"  # single test
 ```
 Client → api.py (port 9000, no GPU) → Redis queue
                                          ↓
-                          worker_docid.py × N (lightweight, ~800MB)
+                          worker_docid.py × N (GPU, ~6-8GB each)
                             ├── EfficientNet classifier (local)
-                            ├── Orientation correction (EasyOCR textbox + docTR)
-                            └── VLM extraction → inference_server.py (port 9020, GPU, ~14GB)
+                            ├── Orientation correction (EasyOCR textbox detection)
+                            └── VLM extraction → inference_server.py (port 9020, GPU, ~12GB)
                                                   └── Batched Qwen2.5-VL inference
 
-Client → api.py → Redis queue → worker_ocr.py (port 9011, ~2GB VRAM)
-                                  └── EasyOCR + docTR orientation
+Client → api.py → Redis queue → worker_ocr.py (port 9011, ~1GB VRAM)
+                                  └── EasyOCR + orientation correction
 ```
 
 **Key insight**: Workers are lightweight — they do classification and preprocessing locally, then delegate VLM inference to a centralized `inference_server.py` that batches requests for higher GPU throughput. Workers communicate with the inference server via Redis (LPUSH request → poll reply key).
@@ -75,7 +75,7 @@ doc_pipeline/
 │   ├── easyocr.py           # EasyOCRExtractor (~2GB VRAM, OCR + regex)
 │   └── hybrid.py            # HybridExtractor — EasyOCR + VLM with CPF validation fallback
 ├── preprocessing/
-│   └── orientation.py       # OrientationCorrector — hybrid: EasyOCR textbox direction (90°/270°) + docTR (180°)
+│   └── orientation.py       # OrientationCorrector — EasyOCR textbox direction (90°/270°)
 ├── ocr/
 │   ├── engine.py            # OCREngine — EasyOCR wrapper with warmup
 │   └── converter.py         # PDFConverter — PDF to image via PyMuPDF (150 DPI)
@@ -137,7 +137,7 @@ docker compose up -d
 docker compose build && docker compose up -d
 ```
 
-Services: **redis** (queue), **api** (stateless, no GPU), **inference-server** (batched VLM, GPU ~14GB), **worker-docid-1 to 5** (always on, ~800MB each, `restart: unless-stopped`), **worker-ocr**
+Services: **redis** (queue), **api** (stateless, no GPU), **inference-server** (batched VLM, GPU ~12GB), **worker-docid-1 to 5** (always on, GPU ~6-8GB each, `restart: unless-stopped`), **worker-ocr** (~1GB VRAM)
 
 ### Inference Server
 
@@ -207,6 +207,21 @@ Scripts are the source of truth for all alerts and dashboards. Alerts use `creat
 1. Add dashboard call in `monitoring/scripts/create-dashboards.sh` (folderUid: `doc-pipeline-workers-nested`)
 2. Add alert rules in `monitoring/scripts/create-alerts.sh` (folderUid: `doc-pipeline-workers-alerts-nested`)
 3. Run both scripts against production Grafana
+
+## Error Tracking (GlitchTip / Sentry)
+
+All entry points (`api.py`, `worker_docid.py`, `worker_ocr.py`, `inference_server.py`) integrate with GlitchTip via `sentry-sdk`. Configured via:
+
+- `DOC_PIPELINE_SENTRY_DSN` — if set, Sentry is enabled; if empty, it's a no-op
+- `DOC_PIPELINE_SENTRY_ENVIRONMENT` — default `production`
+- `DOC_PIPELINE_SENTRY_TRACES_SAMPLE_RATE` — default `0.1`
+
+Each service uses a unique `server_name` in `sentry_sdk.init()` so errors in GlitchTip identify the source container. Handled exceptions are reported via `sentry_sdk.capture_exception(e)` in all worker error handlers.
+
+## GPU / VRAM Requirements
+
+Minimum stack (1 worker): ~20GB VRAM (inference ~12GB + worker ~6-8GB + OCR ~1GB).
+Production (5 workers): ~55GB VRAM. Current deployment on H200 (144GB) shared with ASR services.
 
 ## GPU Sharing (MPS)
 

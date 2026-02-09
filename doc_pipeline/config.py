@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # Orientation correction settings
     orientation_enabled: bool = Field(
         default=True,
-        description="Enable orientation correction via docTR",
+        description="Enable orientation correction via EasyOCR text-box detection",
     )
     orientation_device: str | None = Field(
         default=None,
@@ -75,10 +75,6 @@ class Settings(BaseSettings):
         ge=0.0,
         le=1.0,
         description="Minimum confidence to apply orientation correction",
-    )
-    orientation_use_torch_compile: bool = Field(
-        default=False,
-        description="Use torch.compile for orientation model (faster after warmup)",
     )
 
     # API settings
