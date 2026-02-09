@@ -40,6 +40,7 @@ from prometheus_client import (
 from doc_pipeline.classifier.adapter import ClassifierAdapter
 from doc_pipeline.config import get_settings
 from doc_pipeline.extractors.qwen_vl import QwenVLExtractor
+from doc_pipeline.extractors.vllm_client import VLLMClient
 from doc_pipeline.observability import get_logger, setup_logging
 from doc_pipeline.ocr import OCREngine
 from doc_pipeline.ocr.converter import PDFConverter, is_pdf
@@ -98,6 +99,7 @@ class InferenceServer:
     def __init__(self):
         self.queue: QueueService = get_queue_service()
         self.extractor: QwenVLExtractor | None = None
+        self.vllm_client: VLLMClient | None = None
         self.classifier: ClassifierAdapter | None = None
         self.ocr_engine: OCREngine | None = None
         self.orientation_corrector: OrientationCorrector | None = None
@@ -151,18 +153,42 @@ class InferenceServer:
         self.pdf_converter = PDFConverter(dpi=200)
         logger.info("pdf_converter_loaded")
 
-        # Load VLM model (Qwen, ~12GB)
-        logger.info(
-            "loading_vlm_model",
-            model=settings.extractor_model_qwen,
-            device=settings.extractor_device,
-        )
-        self.extractor = QwenVLExtractor(
-            model_name=settings.extractor_model_qwen,
-            device=settings.extractor_device,
-        )
-        self.extractor.load_model()
-        logger.info("vlm_model_loaded")
+        # Load VLM backend: vLLM (external) or HuggingFace (local)
+        if settings.vllm_enabled:
+            logger.info(
+                "loading_vllm_client",
+                base_url=settings.vllm_base_url,
+                model=settings.vllm_model,
+            )
+            self.vllm_client = VLLMClient(
+                base_url=settings.vllm_base_url,
+                model=settings.vllm_model,
+                max_tokens=settings.vllm_max_tokens,
+                timeout=settings.vllm_timeout,
+            )
+            await self.vllm_client.start()
+
+            # Wait for vLLM to be ready (up to 5 min)
+            for attempt in range(60):
+                if await self.vllm_client.health_check():
+                    logger.info("vllm_server_ready")
+                    break
+                logger.info("vllm_waiting_for_server", attempt=attempt + 1)
+                await asyncio.sleep(5.0)
+            else:
+                raise RuntimeError("vLLM server not ready after 5 minutes")
+        else:
+            logger.info(
+                "loading_vlm_model",
+                model=settings.extractor_model_qwen,
+                device=settings.extractor_device,
+            )
+            self.extractor = QwenVLExtractor(
+                model_name=settings.extractor_model_qwen,
+                device=settings.extractor_device,
+            )
+            self.extractor.load_model()
+            logger.info("vlm_model_loaded")
 
         self._running = True
         logger.info(
@@ -175,6 +201,9 @@ class InferenceServer:
         """Stop the inference server gracefully."""
         logger.info("inference_server_stopping")
         self._running = False
+
+        if self.vllm_client:
+            await self.vllm_client.stop()
 
         if self.extractor:
             self.extractor.unload_model()
@@ -236,6 +265,26 @@ class InferenceServer:
                 )
                 self._current_batch_size = 0
                 await asyncio.sleep(1.0)
+
+    async def _vlm_generate(self, image: Image.Image, prompt: str) -> str:
+        """Generate VLM response via vLLM or local HuggingFace."""
+        if self.vllm_client:
+            return await self.vllm_client.generate(image, prompt)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.extractor._generate, image, prompt)
+
+    async def _vlm_generate_batch(self, images: list[Image.Image], prompts: list[str]) -> list[str]:
+        """Generate VLM responses for a batch via vLLM or local HuggingFace."""
+        if self.vllm_client:
+            return await self.vllm_client.generate_batch(images, prompts)
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, self.extractor._generate_batch, images, prompts)
+
+    def _parse_vlm_json(self, text: str) -> dict:
+        """Parse JSON from VLM response using the appropriate parser."""
+        if self.vllm_client:
+            return VLLMClient.parse_json(text)
+        return self.extractor._parse_json(text)
 
     async def _process_batch_smart(self, batch: list[dict]) -> None:
         """Process a mixed batch: route by operation, batch VLM calls together."""
@@ -307,7 +356,7 @@ class InferenceServer:
 
     def _build_extraction_result(self, raw_text: str, doc_type: str) -> dict:
         """Parse VLM response and build structured extraction result dict."""
-        data = self.extractor._parse_json(raw_text)
+        data = self._parse_vlm_json(raw_text)
         data = fix_cpf_rg_swap(data)
 
         if doc_type.startswith("rg"):
@@ -366,12 +415,12 @@ class InferenceServer:
             "classification": classification.model_dump(),
         }
 
-    def _handle_extract_single(self, request: dict, image: Image.Image) -> dict:
+    async def _handle_extract_single(self, request: dict, image: Image.Image) -> dict:
         """Handle extract operation for a single request (uses VLM)."""
         doc_type = request["document_type"]
         backend = request.get("backend", "vlm")
         prompt = self._get_prompt(doc_type)
-        raw_text = self.extractor._generate(image, prompt)
+        raw_text = await self._vlm_generate(image, prompt)
         extraction_data = self._build_extraction_result(raw_text, doc_type)
 
         # Hybrid CPF validation
@@ -397,7 +446,7 @@ class InferenceServer:
             "result": extraction_data,
         }
 
-    def _handle_process_single(self, request: dict, image: Image.Image) -> dict:
+    async def _handle_process_single(self, request: dict, image: Image.Image) -> dict:
         """Handle process (classify + extract) for a single request."""
         do_extract = request.get("extract", True)
         min_confidence = request.get("min_confidence") or settings.min_confidence
@@ -429,7 +478,7 @@ class InferenceServer:
         # Extract via VLM
         doc_type_str = classification.document_type.value
         prompt = self._get_prompt(doc_type_str)
-        raw_text = self.extractor._generate(image, prompt)
+        raw_text = await self._vlm_generate(image, prompt)
         extraction_data = self._build_extraction_result(raw_text, doc_type_str)
 
         # Hybrid CPF validation
@@ -543,9 +592,9 @@ class InferenceServer:
                 if operation == "classify":
                     result = self._handle_classify(request, image)
                 elif operation == "extract":
-                    result = self._handle_extract_single(request, image)
+                    result = await self._handle_extract_single(request, image)
                 elif operation == "process":
-                    result = self._handle_process_single(request, image)
+                    result = await self._handle_process_single(request, image)
                 else:
                     raise ValueError(f"Unknown operation: {operation}")
 
@@ -677,7 +726,7 @@ class InferenceServer:
             images_for_vlm = [item[1] for item in vlm_items]
             prompts_for_vlm = [item[2] for item in vlm_items]
             try:
-                raw_texts = self.extractor._generate_batch(images_for_vlm, prompts_for_vlm)
+                raw_texts = await self._vlm_generate_batch(images_for_vlm, prompts_for_vlm)
             except Exception as e:
                 sentry_sdk.capture_exception(e)
                 logger.error(
@@ -868,13 +917,20 @@ async def health():
 
     queue_depth = await server.queue.redis.llen(QueueName.INFERENCE)
 
+    vlm_backend = "vllm" if server.vllm_client else "huggingface"
+    if server.vllm_client:
+        vlm_ready = await server.vllm_client.health_check()
+    else:
+        vlm_ready = server.extractor is not None and server.extractor._model is not None
+
     return {
         "status": "ok",
         "server_running": server._running,
         "current_batch_size": server._current_batch_size,
         "queue_depth": queue_depth,
+        "vlm_backend": vlm_backend,
         "models_loaded": {
-            "vlm": server.extractor is not None and server.extractor._model is not None,
+            "vlm": vlm_ready,
             "classifier": server.classifier is not None,
             "ocr": server.ocr_engine is not None,
             "orientation": server.orientation_corrector is not None,

@@ -122,16 +122,122 @@ Example with 20 concurrent:
 **Continuous batching (vLLM)** would reduce this by interleaving token generation across requests
 instead of processing them sequentially in fixed groups.
 
-## vLLM Comparison
+## vLLM — Continuous Batching (gpu-memory-utilization=0.30)
 
-_TBD — run same tests after vLLM migration_
+**Config changes vs baseline:**
+- VLM backend: vLLM v0.15.1 (continuous batching + PagedAttention + CUDA graphs)
+- `--gpu-memory-utilization 0.30` (restrictive — only 0.17 GiB KV cache, max 1.18x concurrency)
+- Inference server no longer loads Qwen locally; delegates to vLLM container via HTTP
+- **Date**: 2026-02-09
 
-## Summary Table
+### Test 1: Single Request
 
-| Scenario | Concurrency | Latency P50 | Latency P95 | Throughput | Errors |
-|----------|-------------|-------------|-------------|------------|--------|
-| Single | 1 | 5.1s | 5.4s | 0.19 rps | 0% |
-| Low | 5 | 13.9s | 14.2s | 0.36 rps | 0% |
-| Medium | 10 | 20.1s | 27.5s | 0.42 rps | 0% |
-| High | 20 | 44.1s | 48.8s | 0.42 rps | 0% |
-| Stress | 30 | 59.1s | 67.8s | 0.46 rps | 0% |
+| Metric | Value |
+|--------|-------|
+| Requests | 10 |
+| Concurrency | 1 |
+| RPS | 1 |
+| OK / Fail | 10 / 0 |
+| Latency mean | 2,540 ms |
+| P50 | 2,425 ms |
+| P95 | 2,721 ms |
+| P99 | 2,721 ms |
+| Throughput | 0.39 rps |
+
+### Test 2: Low Concurrency
+
+| Metric | Value |
+|--------|-------|
+| Requests | 30 |
+| Concurrency | 5 |
+| RPS | 2 |
+| OK / Fail | 30 / 0 |
+| Latency mean | 8,285 ms |
+| P50 | 8,463 ms |
+| P95 | 9,076 ms |
+| P99 | 9,084 ms |
+| Throughput | 0.58 rps |
+
+### Test 3: Medium Concurrency
+
+| Metric | Value |
+|--------|-------|
+| Requests | 50 |
+| Concurrency | 10 |
+| RPS | 5 |
+| OK / Fail | 50 / 0 |
+| Latency mean | 14,514 ms |
+| P50 | 13,002 ms |
+| P95 | 18,886 ms |
+| P99 | 19,179 ms |
+| Throughput | 0.63 rps |
+
+### Test 4: High Concurrency
+
+| Metric | Value |
+|--------|-------|
+| Requests | 50 |
+| Concurrency | 20 |
+| RPS | 10 |
+| OK / Fail | 50 / 0 |
+| Latency mean | 25,603 ms |
+| P50 | 30,475 ms |
+| P95 | 31,094 ms |
+| P99 | 31,242 ms |
+| Throughput | 0.64 rps |
+
+### Test 5: Stress Test
+
+| Metric | Value |
+|--------|-------|
+| Requests | 60 |
+| Concurrency | 30 |
+| RPS | 15 |
+| OK / Fail | 60 / 0 |
+| Latency mean | 36,768 ms |
+| P50 | 43,781 ms |
+| P95 | 50,176 ms |
+| P99 | 50,527 ms |
+| Throughput | 0.63 rps |
+
+### Resource Usage During Tests
+
+| Metric | Idle | Under Load (30 concurrent) |
+|--------|------|---------------------------|
+| VRAM (total) | 13.0 GB | 13.4 GB (stable) |
+| GPU Utilization | 2-23% | 25-98% |
+| Redis Memory | 1.5 MB | 2.4 MB |
+| Redis Clients | 17 | 40 |
+| Inference Queue Peak | 0 | 16 |
+| vLLM Container RAM | 5.93 GiB | 5.93 GiB (stable) |
+| Inference Server RAM | 1.25 GiB | 1.30 GiB (stable) |
+
+### Key Observations
+
+- **Single-request latency: 2.4s** (vs 5.1s baseline) — **2.1x faster**
+- **Throughput ceiling: ~0.63 rps** (vs 0.42-0.46 baseline) — **~50% higher**
+- **Latency under load improved significantly**: P50 at 20 concurrent dropped from 44.1s to 30.5s (**31% lower**)
+- **Zero errors** across all scenarios
+- **VRAM: 13.0 GB total** (vLLM ~9.8GB + inference-server ~3.2GB) with restrictive 0.30 memory utilization
+- **KV cache severely limited** at 0.30: only 4,816 tokens (1.18x concurrency). Higher `gpu-memory-utilization` (0.70-0.90) on production H200 will significantly improve throughput
+- **vLLM container RAM stable** at 5.93 GiB regardless of load
+- **No memory leaks** in any component during sustained testing
+
+### Bottleneck Analysis
+
+With `gpu-memory-utilization=0.30`, vLLM has almost no KV cache headroom (0.17 GiB).
+This forces sequential processing similar to batch=1, negating most of continuous batching's benefit.
+The 2x single-request speedup comes from vLLM's optimized inference (CUDA graphs, FlashAttention, compiled kernels).
+
+On production H200 with `gpu-memory-utilization=0.90`, the KV cache will be ~100x larger,
+enabling true concurrent token generation across multiple requests simultaneously.
+
+## Summary Table — Baseline vs vLLM
+
+| Scenario | Conc | P50 (base) | P50 (vLLM) | P95 (base) | P95 (vLLM) | RPS (base) | RPS (vLLM) | Improvement |
+|----------|------|------------|------------|------------|------------|------------|------------|-------------|
+| Single | 1 | 5.1s | 2.4s | 5.4s | 2.7s | 0.19 | 0.39 | **2.1x P50** |
+| Low | 5 | 13.9s | 8.5s | 14.2s | 9.1s | 0.36 | 0.58 | **1.6x P50** |
+| Medium | 10 | 20.1s | 13.0s | 27.5s | 18.9s | 0.42 | 0.63 | **1.5x P50** |
+| High | 20 | 44.1s | 30.5s | 48.8s | 31.1s | 0.42 | 0.64 | **1.4x P50** |
+| Stress | 30 | 59.1s | 43.8s | 67.8s | 50.2s | 0.46 | 0.63 | **1.3x P50** |

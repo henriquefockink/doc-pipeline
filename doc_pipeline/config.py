@@ -210,6 +210,28 @@ class Settings(BaseSettings):
         description="Max ms to wait for batch to fill before processing",
     )
 
+    # vLLM settings (external VLM server with continuous batching)
+    vllm_enabled: bool = Field(
+        default=False,
+        description="Use vLLM server for VLM inference instead of local HuggingFace model",
+    )
+    vllm_base_url: str = Field(
+        default="http://vllm:8000/v1",
+        description="vLLM OpenAI-compatible API base URL",
+    )
+    vllm_model: str = Field(
+        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        description="Model name served by vLLM",
+    )
+    vllm_max_tokens: int = Field(
+        default=1024,
+        description="Max tokens for vLLM generation",
+    )
+    vllm_timeout: float = Field(
+        default=60.0,
+        description="Timeout in seconds for vLLM requests",
+    )
+
     # Worker concurrency settings
     worker_concurrent_jobs: int = Field(
         default=1,
