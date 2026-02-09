@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Annotated
 
 import redis.exceptions
+import sentry_sdk
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from PIL import Image
@@ -58,8 +59,6 @@ logger = get_logger("api")
 
 # Sentry / GlitchTip
 if settings.sentry_dsn:
-    import sentry_sdk
-
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
         environment=settings.sentry_environment,
@@ -462,6 +461,7 @@ async def classify(
         raise HTTPException(status_code=503, detail=str(e))
 
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/classify",
@@ -625,6 +625,7 @@ async def extract(
         raise HTTPException(status_code=503, detail=str(e))
 
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/extract",
@@ -770,6 +771,7 @@ async def process(
         raise HTTPException(status_code=503, detail=str(e))
 
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/process",
@@ -903,6 +905,7 @@ async def ocr(
         raise HTTPException(status_code=503, detail=str(e))
 
     except Exception as e:
+        sentry_sdk.capture_exception(e)
         metrics.requests_by_client.labels(
             client=client,
             endpoint="/ocr",

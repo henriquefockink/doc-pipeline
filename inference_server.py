@@ -17,6 +17,7 @@ import sys
 import time
 from contextlib import asynccontextmanager
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 from PIL import Image
@@ -48,8 +49,6 @@ logger = get_logger("inference_server")
 
 # Sentry / GlitchTip
 if settings.sentry_dsn:
-    import sentry_sdk
-
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
         environment=settings.sentry_environment,
@@ -272,6 +271,7 @@ class InferenceServer:
             )
 
         except Exception as e:
+            sentry_sdk.capture_exception(e)
             inference_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
             reply = {
                 "inference_id": inference_id,
@@ -327,6 +327,7 @@ class InferenceServer:
             try:
                 raw_texts = self.extractor._generate_batch(images, prompts)
             except Exception as e:
+                sentry_sdk.capture_exception(e)
                 # If batch inference fails, mark all as errors
                 logger.error(
                     "batch_inference_error",

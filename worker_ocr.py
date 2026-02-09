@@ -14,6 +14,7 @@ import sys
 import time
 from pathlib import Path
 
+import sentry_sdk
 from PIL import Image
 
 from doc_pipeline.config import get_settings
@@ -33,8 +34,6 @@ metrics = get_metrics()
 
 # Sentry / GlitchTip
 if settings.sentry_dsn:
-    import sentry_sdk
-
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
         environment=settings.sentry_environment,
@@ -185,6 +184,7 @@ class OCRWorker:
             ).inc()
 
         except Exception as e:
+            sentry_sdk.capture_exception(e)
             processing_time_ms = (time.perf_counter() - start_time) * 1000
 
             logger.exception(

@@ -15,6 +15,7 @@ import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import sentry_sdk
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse, PlainTextResponse
 from PIL import Image
@@ -49,8 +50,6 @@ logger = get_logger("worker")
 
 # Sentry / GlitchTip
 if settings.sentry_dsn:
-    import sentry_sdk
-
     sentry_sdk.init(
         dsn=settings.sentry_dsn,
         environment=settings.sentry_environment,
@@ -626,6 +625,8 @@ class DocumentWorker:
             )
 
         except Exception as e:
+            sentry_sdk.capture_exception(e)
+
             # Record error
             job.mark_completed(error=str(e) or f"{type(e).__name__}: timeout")
             self.metrics.jobs_processed.labels(
