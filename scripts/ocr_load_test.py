@@ -24,11 +24,9 @@ import statistics
 import sys
 import time
 from dataclasses import dataclass
-from typing import Any, Optional
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
-
 
 DEFAULT_URL = "https://ocr.paneas.com/process"
 DEFAULT_TIMEOUT_S = 800.0
@@ -42,10 +40,10 @@ DEFAULT_MIN_CONFIDENCE = 0.9
 class RequestResult:
     index: int
     ok: bool
-    status_code: Optional[int]
+    status_code: int | None
     latency_s: float
-    error: Optional[str]
-    response_text: Optional[str]
+    error: str | None
+    response_text: str | None
 
 
 def _mask_secret(secret: str, keep: int = 4) -> str:
@@ -109,7 +107,7 @@ async def _run_load_test(
     mime_type, _ = mimetypes.guess_type(file_path)
     mime_type = mime_type or "application/octet-stream"
 
-    file_bytes: Optional[bytes] = None
+    file_bytes: bytes | None = None
     if preload_file:
         with open(file_path, "rb") as f:
             file_bytes = f.read()
@@ -127,8 +125,8 @@ async def _run_load_test(
     )
     timeout = httpx.Timeout(timeout_s)
 
-    results: list[Optional[RequestResult]] = [None] * requests_total
-    queue: asyncio.Queue[Optional[int]] = asyncio.Queue()
+    results: list[RequestResult | None] = [None] * requests_total
+    queue: asyncio.Queue[int | None] = asyncio.Queue()
 
     async with httpx.AsyncClient(
         headers=headers,
@@ -166,7 +164,7 @@ async def _run_load_test(
                             response = await client.post(url, files=files)
 
                     latency_s = time.perf_counter() - t0
-                    response_text: Optional[str] = None
+                    response_text: str | None = None
                     if print_response:
                         text = response.text
                         if max_response_chars > 0 and len(text) > max_response_chars:
@@ -197,12 +195,12 @@ async def _run_load_test(
                 if per_request:
                     status = result.status_code if result.status_code is not None else "ERR"
                     ms = result.latency_s * 1000.0
-                    msg = f"[{index+1:>4}/{requests_total}] worker={worker_id:>2} status={status} {ms:>8.1f}ms"
+                    msg = f"[{index + 1:>4}/{requests_total}] worker={worker_id:>2} status={status} {ms:>8.1f}ms"
                     if result.error and (result.status_code is None or result.status_code >= 400):
                         msg += f" error={result.error}"
                     print(msg, flush=True)
                 if result.response_text is not None:
-                    print(f"--- response[{index+1}] ---\n{result.response_text}\n", flush=True)
+                    print(f"--- response[{index + 1}] ---\n{result.response_text}\n", flush=True)
 
         tasks = [asyncio.create_task(worker(i + 1)) for i in range(concurrency)]
         producer_task = asyncio.create_task(producer())
@@ -233,7 +231,7 @@ def _print_summary(results: list[RequestResult], started_s: float, finished_s: f
 
     print("\n=== Summary ===")
     print(f"total={len(results)} ok={len(ok_results)} fail={len(fail_results)}")
-    print(f"duration={duration_s:.2f}s achieved_rps={len(results)/duration_s:.2f}")
+    print(f"duration={duration_s:.2f}s achieved_rps={len(results) / duration_s:.2f}")
     print(f"status_counts={json.dumps(status_counts, ensure_ascii=False, sort_keys=True)}")
 
     def show_lat(label: str, values: list[float]) -> None:
@@ -262,15 +260,29 @@ def _print_summary(results: list[RequestResult], started_s: float, finished_s: f
 
 
 def _parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="OCR load test (multipart upload) with RPS limiter.")
+    parser = argparse.ArgumentParser(
+        description="OCR load test (multipart upload) with RPS limiter."
+    )
     parser.add_argument("--file", required=True, help="Caminho do arquivo a enviar.")
     parser.add_argument("--url", default=DEFAULT_URL, help=f"URL base (default: {DEFAULT_URL}).")
-    parser.add_argument("--field", default="arquivo", help="Nome do campo multipart (default: arquivo).")
-    parser.add_argument("--requests", type=int, default=DEFAULT_REQUESTS, help="Total de requisições.")
-    parser.add_argument("--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Requisições em paralelo.")
-    parser.add_argument("--rps", type=float, default=DEFAULT_RPS, help="Requisições por segundo (rate limit).")
-    parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="Timeout por requisição (s).")
-    parser.add_argument("--api-key", default=os.getenv("OCR_API_KEY", ""), help="X-API-Key (ou env OCR_API_KEY).")
+    parser.add_argument(
+        "--field", default="arquivo", help="Nome do campo multipart (default: arquivo)."
+    )
+    parser.add_argument(
+        "--requests", type=int, default=DEFAULT_REQUESTS, help="Total de requisições."
+    )
+    parser.add_argument(
+        "--concurrency", type=int, default=DEFAULT_CONCURRENCY, help="Requisições em paralelo."
+    )
+    parser.add_argument(
+        "--rps", type=float, default=DEFAULT_RPS, help="Requisições por segundo (rate limit)."
+    )
+    parser.add_argument(
+        "--timeout", type=float, default=DEFAULT_TIMEOUT_S, help="Timeout por requisição (s)."
+    )
+    parser.add_argument(
+        "--api-key", default=os.getenv("OCR_API_KEY", ""), help="X-API-Key (ou env OCR_API_KEY)."
+    )
     parser.add_argument(
         "--extract",
         action=argparse.BooleanOptionalAction,
@@ -289,8 +301,12 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         default=True,
         help="Verifica TLS (default: true). Use --no-verify-tls para desabilitar.",
     )
-    parser.add_argument("--per-request", action="store_true", help="Imprime uma linha por requisição.")
-    parser.add_argument("--print-response", action="store_true", help="Imprime o corpo da resposta (truncado).")
+    parser.add_argument(
+        "--per-request", action="store_true", help="Imprime uma linha por requisição."
+    )
+    parser.add_argument(
+        "--print-response", action="store_true", help="Imprime o corpo da resposta (truncado)."
+    )
     parser.add_argument(
         "--max-response-chars",
         type=int,

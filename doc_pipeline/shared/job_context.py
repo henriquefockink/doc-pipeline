@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -36,7 +36,7 @@ class JobContext:
     correlation_id: str | None = None
 
     # Timestamps
-    enqueued_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    enqueued_at: str = field(default_factory=lambda: datetime.now(UTC).isoformat())
     started_at: str | None = None
     completed_at: str | None = None
 
@@ -81,11 +81,13 @@ class JobContext:
 
     def mark_started(self) -> None:
         """Mark the job as started."""
-        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.started_at = datetime.now(UTC).isoformat()
 
-    def mark_completed(self, result: dict[str, Any] | None = None, error: str | None = None) -> None:
+    def mark_completed(
+        self, result: dict[str, Any] | None = None, error: str | None = None
+    ) -> None:
         """Mark the job as completed with result or error."""
-        self.completed_at = datetime.now(timezone.utc).isoformat()
+        self.completed_at = datetime.now(UTC).isoformat()
         self.result = result
         self.error = error
 
@@ -153,10 +155,7 @@ class JobContext:
             return 0.0
         enqueued = datetime.fromisoformat(self.enqueued_at)
         # If started, use started time, otherwise use now
-        if self.started_at:
-            end = datetime.fromisoformat(self.started_at)
-        else:
-            end = datetime.now(timezone.utc)
+        end = datetime.fromisoformat(self.started_at) if self.started_at else datetime.now(UTC)
         return (end - enqueued).total_seconds() * 1000
 
     @property

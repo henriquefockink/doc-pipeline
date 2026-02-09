@@ -155,4 +155,4 @@ async def require_api_key(api_key: str | None = Security(api_key_header)) -> Aut
         raise HTTPException(
             status_code=503,
             detail=str(e),
-        )
+        ) from e

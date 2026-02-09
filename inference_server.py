@@ -1,17 +1,25 @@
 #!/usr/bin/env python3
 """
-Inference server for VLM (Qwen) extraction.
+Centralized inference server for all GPU models.
 
 Runs as a standalone process with GPU access. Workers send inference
-requests via Redis queue, this server processes them and replies via Pub/Sub.
+requests via Redis queue, this server processes them and replies via Redis keys.
 
-Supports batched inference: collects multiple requests and processes them
-in a single GPU forward pass for higher throughput.
+Models loaded:
+- EfficientNet classifier (~200MB VRAM)
+- EasyOCR engine (~2-4GB VRAM)
+- Qwen VLM extractor (~12GB VRAM)
+- Orientation corrector (shares EasyOCR)
+- PDF converter (CPU only)
+
+Supports batched VLM inference: collects multiple extract/process requests
+and processes them in a single GPU forward pass for higher throughput.
 """
 
 import asyncio
 import contextlib
 import json
+import re
 import signal
 import sys
 import time
@@ -29,14 +37,18 @@ from prometheus_client import (
     generate_latest,
 )
 
+from doc_pipeline.classifier.adapter import ClassifierAdapter
 from doc_pipeline.config import get_settings
 from doc_pipeline.extractors.qwen_vl import QwenVLExtractor
 from doc_pipeline.observability import get_logger, setup_logging
+from doc_pipeline.ocr import OCREngine
+from doc_pipeline.ocr.converter import PDFConverter, is_pdf
+from doc_pipeline.preprocessing import OrientationCorrector
 from doc_pipeline.prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from doc_pipeline.schemas import CINData, CNHData, RGData
 from doc_pipeline.shared.constants import INFERENCE_REPLY_TTL, QueueName, inference_reply_key
 from doc_pipeline.shared.queue import QueueService, get_queue_service
-from doc_pipeline.utils import fix_cpf_rg_swap
+from doc_pipeline.utils import fix_cpf_rg_swap, is_valid_cpf, normalize_cpf, validate_cpf
 
 # Setup logging
 settings = get_settings()
@@ -61,13 +73,13 @@ if settings.sentry_dsn:
 inference_metrics_requests_total = Counter(
     "inference_requests_total",
     "Total inference requests processed",
-    ["document_type", "status"],
+    ["operation", "status"],
 )
 inference_metrics_duration_seconds = Histogram(
     "inference_duration_seconds",
-    "Time spent on VLM inference",
-    ["document_type"],
-    buckets=(0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0),
+    "Time spent on inference",
+    ["operation"],
+    buckets=(0.1, 0.2, 0.5, 1.0, 2.0, 3.0, 5.0, 8.0, 10.0, 15.0, 20.0, 30.0),
 )
 inference_metrics_queue_depth = Gauge(
     "inference_queue_depth",
@@ -81,24 +93,65 @@ inference_metrics_batch_size = Histogram(
 
 
 class InferenceServer:
-    """Server that processes VLM inference requests from Redis queue with batching."""
+    """Server that processes all inference requests from Redis queue."""
 
     def __init__(self):
         self.queue: QueueService = get_queue_service()
         self.extractor: QwenVLExtractor | None = None
+        self.classifier: ClassifierAdapter | None = None
+        self.ocr_engine: OCREngine | None = None
+        self.orientation_corrector: OrientationCorrector | None = None
+        self.pdf_converter: PDFConverter | None = None
         self._running = False
         self._current_batch_size: int = 0
         self._batch_size = settings.inference_batch_size
         self._batch_timeout_ms = settings.inference_batch_timeout_ms
 
     async def start(self) -> None:
-        """Initialize and start the inference server."""
+        """Initialize and start the inference server with all models."""
         logger.info("inference_server_starting")
 
         # Connect to Redis
         await self.queue.connect()
 
-        # Load VLM model
+        # Load classifier (EfficientNet, ~200MB)
+        logger.info(
+            "loading_classifier",
+            model_path=str(settings.classifier_model_path),
+            model_type=settings.classifier_model_type,
+            device=settings.classifier_device,
+        )
+        self.classifier = ClassifierAdapter(
+            model_path=settings.classifier_model_path,
+            model_type=settings.classifier_model_type,
+            device=settings.classifier_device,
+            fp8=settings.classifier_fp8,
+        )
+        logger.info("classifier_loaded")
+
+        # Load OCR engine (EasyOCR, ~2-4GB)
+        logger.info("loading_ocr_engine", lang=settings.ocr_language)
+        self.ocr_engine = OCREngine(
+            lang=settings.ocr_language,
+            use_gpu=settings.ocr_use_gpu,
+        )
+        self.ocr_engine.warmup()
+        logger.info("ocr_engine_loaded")
+
+        # Load orientation corrector (shares EasyOCR)
+        self.orientation_corrector = OrientationCorrector(
+            use_text_detection=settings.orientation_enabled,
+            device=settings.classifier_device,
+            confidence_threshold=settings.orientation_confidence_threshold,
+        )
+        self.orientation_corrector.set_ocr_engine(self.ocr_engine)
+        logger.info("orientation_corrector_loaded")
+
+        # Load PDF converter (CPU only)
+        self.pdf_converter = PDFConverter(dpi=200)
+        logger.info("pdf_converter_loaded")
+
+        # Load VLM model (Qwen, ~12GB)
         logger.info(
             "loading_vlm_model",
             model=settings.extractor_model_qwen,
@@ -130,12 +183,7 @@ class InferenceServer:
         logger.info("inference_server_stopped")
 
     async def _collect_batch(self) -> list[dict]:
-        """Collect a batch of requests from the queue.
-
-        Waits for the first request (blocking), then grabs more
-        non-blocking up to batch_size or batch_timeout.
-        """
-        # Wait for first request (blocking)
+        """Collect a batch of requests from the queue."""
         result = await self.queue.redis.brpop(QueueName.INFERENCE, timeout=5.0)
         if result is None:
             return []
@@ -152,10 +200,8 @@ class InferenceServer:
             remaining_ms = (deadline - time.perf_counter()) * 1000
             if remaining_ms <= 0:
                 break
-            # Non-blocking pop
             extra = await self.queue.redis.rpop(QueueName.INFERENCE)
             if extra is None:
-                # Queue empty, wait a tiny bit for more to arrive
                 await asyncio.sleep(min(0.01, remaining_ms / 1000))
                 extra = await self.queue.redis.rpop(QueueName.INFERENCE)
                 if extra is None:
@@ -168,22 +214,15 @@ class InferenceServer:
         """Main server loop - consume batches from inference queue."""
         while self._running:
             try:
-                # Update queue depth metric
                 depth = await self.queue.redis.llen(QueueName.INFERENCE)
                 inference_metrics_queue_depth.set(depth)
 
-                # Collect batch
                 batch = await self._collect_batch()
                 if not batch:
                     continue
 
                 self._current_batch_size = len(batch)
-
-                if len(batch) == 1:
-                    await self._process_single(batch[0])
-                else:
-                    await self._process_batch(batch)
-
+                await self._process_batch_smart(batch)
                 self._current_batch_size = 0
 
             except asyncio.CancelledError:
@@ -198,6 +237,63 @@ class InferenceServer:
                 self._current_batch_size = 0
                 await asyncio.sleep(1.0)
 
+    async def _process_batch_smart(self, batch: list[dict]) -> None:
+        """Process a mixed batch: route by operation, batch VLM calls together."""
+        # Separate by operation type
+        vlm_requests = []  # extract/process requests that need VLM
+        fast_requests = []  # classify/ocr requests (no VLM needed)
+
+        for req in batch:
+            operation = req.get("operation", "extract")
+            if operation in ("extract", "process"):
+                vlm_requests.append(req)
+            else:
+                fast_requests.append(req)
+
+        # Process fast requests individually (classify ~200ms, ocr ~2s)
+        for req in fast_requests:
+            await self._process_single(req)
+
+        # Process VLM requests as a batch
+        if vlm_requests:
+            if len(vlm_requests) == 1:
+                await self._process_single(vlm_requests[0])
+            else:
+                await self._process_vlm_batch(vlm_requests)
+
+    # ------------------------------------------------------------------
+    # Image loading & preprocessing helpers
+    # ------------------------------------------------------------------
+
+    def _load_image(self, image_path: str) -> Image.Image:
+        """Load and convert image to RGB."""
+        return Image.open(image_path).convert("RGB")
+
+    def _correct_orientation(
+        self, image: Image.Image, auto_rotate: bool
+    ) -> tuple[Image.Image, dict]:
+        """Correct image orientation, return (image, correction_info)."""
+        if not auto_rotate:
+            return image, {
+                "was_corrected": False,
+                "rotation_applied": 0,
+                "skipped": True,
+            }
+
+        result = self.orientation_corrector.correct(image)
+        return result.image, result.to_dict()
+
+    def _convert_pdf_first_page(self, file_path: str) -> Image.Image:
+        """Convert first page of PDF to image."""
+        pages = self.pdf_converter.convert(file_path, max_pages=1)
+        if not pages:
+            raise ValueError("PDF has no pages")
+        return pages[0].convert("RGB")
+
+    # ------------------------------------------------------------------
+    # VLM helpers (shared by extract and process)
+    # ------------------------------------------------------------------
+
     def _get_prompt(self, doc_type: str) -> str:
         """Get the extraction prompt for a document type."""
         if doc_type.startswith("rg"):
@@ -209,8 +305,8 @@ class InferenceServer:
         else:
             raise ValueError(f"Unknown document type: {doc_type}")
 
-    def _build_result(self, raw_text: str, doc_type: str) -> dict:
-        """Parse VLM response and build structured result."""
+    def _build_extraction_result(self, raw_text: str, doc_type: str) -> dict:
+        """Parse VLM response and build structured extraction result dict."""
         data = self.extractor._parse_json(raw_text)
         data = fix_cpf_rg_swap(data)
 
@@ -223,26 +319,237 @@ class InferenceServer:
 
         return model.model_dump()
 
+    def _hybrid_cpf_validation(
+        self, extraction_data: dict, image: Image.Image, request_id: str
+    ) -> dict:
+        """Hybrid mode: validate CPF via EasyOCR fallback if VLM CPF is invalid."""
+        cpf = extraction_data.get("cpf")
+        if is_valid_cpf(cpf):
+            return extraction_data
+
+        logger.info(
+            "hybrid_cpf_invalid_trying_ocr",
+            request_id=request_id,
+            vlm_cpf=cpf,
+        )
+        ocr_text, _ = self.ocr_engine.extract_text(image)
+        cpf_patterns = [
+            r"\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b",
+            r"\b(\d{9})/(\d{2})\b",
+        ]
+        for pattern in cpf_patterns:
+            matches = re.findall(pattern, ocr_text)
+            if matches:
+                if isinstance(matches[0], tuple):
+                    candidate = normalize_cpf(matches[0][0] + matches[0][1])
+                else:
+                    candidate = matches[0]
+                if is_valid_cpf(candidate):
+                    logger.info(
+                        "hybrid_ocr_cpf_found",
+                        request_id=request_id,
+                        ocr_cpf=candidate,
+                    )
+                    extraction_data["cpf"] = candidate
+                    return extraction_data
+
+        return extraction_data
+
+    # ------------------------------------------------------------------
+    # Operation handlers
+    # ------------------------------------------------------------------
+
+    def _handle_classify(self, request: dict, image: Image.Image) -> dict:
+        """Handle classify operation: orient + classify via EfficientNet."""
+        classification = self.classifier.classify(image)
+        return {
+            "classification": classification.model_dump(),
+        }
+
+    def _handle_extract_single(self, request: dict, image: Image.Image) -> dict:
+        """Handle extract operation for a single request (uses VLM)."""
+        doc_type = request["document_type"]
+        backend = request.get("backend", "vlm")
+        prompt = self._get_prompt(doc_type)
+        raw_text = self.extractor._generate(image, prompt)
+        extraction_data = self._build_extraction_result(raw_text, doc_type)
+
+        # Hybrid CPF validation
+        if backend == "hybrid":
+            extraction_data = self._hybrid_cpf_validation(
+                extraction_data, image, request["request_id"]
+            )
+
+        # CPF validation result
+        cpf_validation = None
+        if extraction_data.get("cpf"):
+            cpf_validation = validate_cpf(extraction_data["cpf"])
+
+        return {
+            "extraction": {
+                "document_type": doc_type,
+                "data": extraction_data,
+                "raw_text": None,
+                "backend": "paneas_v2",
+            },
+            "cpf_validation": cpf_validation,
+            # Backward compat for old extract() callers
+            "result": extraction_data,
+        }
+
+    def _handle_process_single(self, request: dict, image: Image.Image) -> dict:
+        """Handle process (classify + extract) for a single request."""
+        do_extract = request.get("extract", True)
+        min_confidence = request.get("min_confidence") or settings.min_confidence
+        backend = request.get("backend", "vlm")
+
+        # Classify
+        classification = self.classifier.classify(image)
+        classification_dict = classification.model_dump()
+
+        if not do_extract:
+            return {
+                "file_path": None,
+                "classification": classification_dict,
+                "extraction": None,
+                "success": True,
+                "error": None,
+            }
+
+        # Check confidence
+        if classification.confidence < min_confidence:
+            return {
+                "file_path": None,
+                "classification": classification_dict,
+                "extraction": None,
+                "success": False,
+                "error": f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
+            }
+
+        # Extract via VLM
+        doc_type_str = classification.document_type.value
+        prompt = self._get_prompt(doc_type_str)
+        raw_text = self.extractor._generate(image, prompt)
+        extraction_data = self._build_extraction_result(raw_text, doc_type_str)
+
+        # Hybrid CPF validation
+        if backend == "hybrid":
+            extraction_data = self._hybrid_cpf_validation(
+                extraction_data, image, request["request_id"]
+            )
+
+        # Build extraction result dict
+        extraction_dict = {
+            "document_type": doc_type_str,
+            "data": extraction_data,
+            "raw_text": None,
+            "backend": "paneas_v2",
+        }
+
+        result = {
+            "file_path": None,
+            "classification": classification_dict,
+            "extraction": extraction_dict,
+            "success": True,
+            "error": None,
+        }
+
+        # CPF validation
+        if extraction_data.get("cpf"):
+            result["cpf_validation"] = validate_cpf(extraction_data["cpf"])
+
+        return result
+
+    def _handle_ocr(self, request: dict) -> dict:
+        """Handle OCR operation: convert PDF/image, orient, OCR each page."""
+        file_path = request["image_path"]
+        max_pages = request.get("max_pages", 10)
+        auto_rotate = request.get("auto_rotate", True)
+        request_id = request["request_id"]
+
+        if is_pdf(file_path):
+            images = self.pdf_converter.convert(file_path, max_pages=max_pages)
+            file_type = "pdf"
+        else:
+            images = [Image.open(file_path).convert("RGB")]
+            file_type = "image"
+
+        pages = []
+        for i, img in enumerate(images, start=1):
+            if auto_rotate:
+                result = self.orientation_corrector.correct(img)
+                if result.was_corrected:
+                    logger.info(
+                        "page_orientation_corrected",
+                        request_id=request_id,
+                        page=i,
+                        rotation=result.rotation_applied.value,
+                        method=result.correction_method,
+                    )
+                img = result.image
+
+            text, confidence = self.ocr_engine.extract_text(img)
+            pages.append(
+                {
+                    "page": i,
+                    "text": text,
+                    "confidence": confidence,
+                }
+            )
+
+        return {
+            "request_id": request_id,
+            "total_pages": len(pages),
+            "pages": pages,
+            "file_type": file_type,
+            "language": settings.ocr_language,
+        }
+
+    # ------------------------------------------------------------------
+    # Single request processing
+    # ------------------------------------------------------------------
+
     async def _process_single(self, request: dict) -> None:
-        """Process a single inference request (no batching)."""
+        """Process a single inference request (any operation)."""
         inference_id = request["inference_id"]
         reply_key = inference_reply_key(inference_id)
-        doc_type = request["document_type"]
+        operation = request.get("operation", "extract")
         start_time = time.perf_counter()
 
         logger.info(
             "inference_processing_start",
             inference_id=inference_id,
             request_id=request["request_id"],
-            document_type=doc_type,
-            batch_size=1,
+            operation=operation,
+            document_type=request.get("document_type"),
         )
 
         try:
-            image = Image.open(request["image_path"]).convert("RGB")
-            prompt = self._get_prompt(doc_type)
-            raw_text = self.extractor._generate(image, prompt)
-            result = self._build_result(raw_text, doc_type)
+            # OCR handles its own image loading (multi-page PDF)
+            if operation == "ocr":
+                result = self._handle_ocr(request)
+            else:
+                # Load image (PDF → first page for classify/extract/process)
+                if is_pdf(request["image_path"]):
+                    image = self._convert_pdf_first_page(request["image_path"])
+                else:
+                    image = self._load_image(request["image_path"])
+
+                # Orientation correction
+                auto_rotate = request.get("auto_rotate", True)
+                image, correction_info = self._correct_orientation(image, auto_rotate)
+
+                # Route to handler
+                if operation == "classify":
+                    result = self._handle_classify(request, image)
+                elif operation == "extract":
+                    result = self._handle_extract_single(request, image)
+                elif operation == "process":
+                    result = self._handle_process_single(request, image)
+                else:
+                    raise ValueError(f"Unknown operation: {operation}")
+
+                result["image_correction"] = correction_info
 
             inference_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
@@ -254,10 +561,8 @@ class InferenceServer:
                 "error": None,
             }
 
-            inference_metrics_requests_total.labels(
-                document_type=doc_type, status="success"
-            ).inc()
-            inference_metrics_duration_seconds.labels(document_type=doc_type).observe(
+            inference_metrics_requests_total.labels(operation=operation, status="success").inc()
+            inference_metrics_duration_seconds.labels(operation=operation).observe(
                 inference_time_ms / 1000
             )
             inference_metrics_batch_size.observe(1)
@@ -265,9 +570,8 @@ class InferenceServer:
             logger.info(
                 "inference_processing_complete",
                 inference_id=inference_id,
-                document_type=doc_type,
+                operation=operation,
                 inference_time_ms=inference_time_ms,
-                batch_size=1,
             )
 
         except Exception as e:
@@ -280,20 +584,23 @@ class InferenceServer:
                 "inference_time_ms": inference_time_ms,
                 "error": str(e),
             }
-            inference_metrics_requests_total.labels(
-                document_type=doc_type, status="error"
-            ).inc()
+            inference_metrics_requests_total.labels(operation=operation, status="error").inc()
             logger.error(
                 "inference_processing_error",
                 inference_id=inference_id,
+                operation=operation,
                 error=str(e),
                 error_type=type(e).__name__,
             )
 
         await self.queue.redis.setex(reply_key, INFERENCE_REPLY_TTL, json.dumps(reply))
 
-    async def _process_batch(self, batch: list[dict]) -> None:
-        """Process a batch of inference requests in a single forward pass."""
+    # ------------------------------------------------------------------
+    # Batched VLM processing (extract/process only)
+    # ------------------------------------------------------------------
+
+    async def _process_vlm_batch(self, batch: list[dict]) -> None:
+        """Process a batch of extract/process requests with batched VLM inference."""
         start_time = time.perf_counter()
         batch_size = len(batch)
 
@@ -305,37 +612,83 @@ class InferenceServer:
 
         inference_metrics_batch_size.observe(batch_size)
 
-        # Load all images and determine prompts
-        images = []
-        prompts = []
-        valid_indices = []
+        # Phase 1: Preprocess each request (load image, orient, classify if process)
+        preprocessed = []  # (index, image, doc_type, classification_dict_or_None, skip_reason)
         errors = {}
 
-        for i, request in enumerate(batch):
+        for i, req in enumerate(batch):
             try:
-                image = Image.open(request["image_path"]).convert("RGB")
-                prompt = self._get_prompt(request["document_type"])
-                images.append(image)
-                prompts.append(prompt)
-                valid_indices.append(i)
+                operation = req.get("operation", "extract")
+
+                # Load image
+                if is_pdf(req["image_path"]):
+                    image = self._convert_pdf_first_page(req["image_path"])
+                else:
+                    image = self._load_image(req["image_path"])
+
+                # Orient
+                auto_rotate = req.get("auto_rotate", True)
+                image, correction_info = self._correct_orientation(image, auto_rotate)
+
+                if operation == "process":
+                    do_extract = req.get("extract", True)
+                    min_confidence = req.get("min_confidence") or settings.min_confidence
+
+                    classification = self.classifier.classify(image)
+                    classification_dict = classification.model_dump()
+
+                    if not do_extract or classification.confidence < min_confidence:
+                        # No VLM needed — send reply directly
+                        skip_result = {
+                            "file_path": None,
+                            "classification": classification_dict,
+                            "extraction": None,
+                            "image_correction": correction_info,
+                            "success": not do_extract
+                            or classification.confidence >= min_confidence,
+                            "error": None
+                            if not do_extract
+                            else f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
+                        }
+                        preprocessed.append((i, None, None, skip_result, correction_info))
+                        continue
+
+                    doc_type = classification.document_type.value
+                    preprocessed.append((i, image, doc_type, classification_dict, correction_info))
+                else:
+                    # extract operation
+                    doc_type = req["document_type"]
+                    preprocessed.append((i, image, doc_type, None, correction_info))
+
             except Exception as e:
                 errors[i] = str(e)
 
-        # Run batched inference for all valid requests
+        # Phase 2: Collect VLM-eligible items for batch inference
+        vlm_items = []  # (preprocessed_index, image, prompt)
+        for pp_idx, (_i, image, doc_type, _class_dict_or_skip, _corr) in enumerate(preprocessed):
+            if image is None:
+                continue  # skipped (no extract needed)
+            prompt = self._get_prompt(doc_type)
+            vlm_items.append((pp_idx, image, prompt))
+
+        # Run batched VLM
         raw_texts = []
-        if images:
+        if vlm_items:
+            images_for_vlm = [item[1] for item in vlm_items]
+            prompts_for_vlm = [item[2] for item in vlm_items]
             try:
-                raw_texts = self.extractor._generate_batch(images, prompts)
+                raw_texts = self.extractor._generate_batch(images_for_vlm, prompts_for_vlm)
             except Exception as e:
                 sentry_sdk.capture_exception(e)
-                # If batch inference fails, mark all as errors
                 logger.error(
-                    "batch_inference_error",
+                    "batch_vlm_error",
                     error=str(e),
                     error_type=type(e).__name__,
-                    batch_size=len(images),
+                    batch_size=len(vlm_items),
                 )
-                for i in valid_indices:
+                # Mark all VLM items as errors
+                for pp_idx, _, _ in vlm_items:
+                    i = preprocessed[pp_idx][0]
                     errors[i] = str(e)
                 raw_texts = []
 
@@ -344,18 +697,20 @@ class InferenceServer:
         logger.info(
             "batch_inference_complete",
             batch_size=batch_size,
-            valid_count=len(valid_indices),
+            vlm_count=len(vlm_items),
             error_count=len(errors),
             inference_time_ms=batch_time_ms,
-            ms_per_item=round(batch_time_ms / batch_size, 1),
         )
 
-        # Build replies and publish
-        text_idx = 0
-        for i, request in enumerate(batch):
-            inference_id = request["inference_id"]
+        # Phase 3: Build replies
+        vlm_text_idx = 0
+        for _pp_idx, (i, image, doc_type, class_or_skip, correction_info) in enumerate(
+            preprocessed
+        ):
+            req = batch[i]
+            inference_id = req["inference_id"]
             reply_key = inference_reply_key(inference_id)
-            doc_type = request["document_type"]
+            operation = req.get("operation", "extract")
 
             if i in errors:
                 reply = {
@@ -365,12 +720,61 @@ class InferenceServer:
                     "inference_time_ms": batch_time_ms,
                     "error": errors[i],
                 }
-                inference_metrics_requests_total.labels(
-                    document_type=doc_type, status="error"
-                ).inc()
+                inference_metrics_requests_total.labels(operation=operation, status="error").inc()
+            elif image is None:
+                # Skipped (process with low confidence / no extract)
+                reply = {
+                    "inference_id": inference_id,
+                    "success": True,
+                    "result": class_or_skip,  # pre-built skip result
+                    "inference_time_ms": batch_time_ms,
+                    "error": None,
+                }
+                inference_metrics_requests_total.labels(operation=operation, status="success").inc()
             else:
+                # Has VLM result
                 try:
-                    result = self._build_result(raw_texts[text_idx], doc_type)
+                    raw_text = raw_texts[vlm_text_idx]
+                    vlm_text_idx += 1
+                    extraction_data = self._build_extraction_result(raw_text, doc_type)
+
+                    backend = req.get("backend", "vlm")
+                    if backend == "hybrid":
+                        extraction_data = self._hybrid_cpf_validation(
+                            extraction_data, image, req["request_id"]
+                        )
+
+                    if operation == "process":
+                        result = {
+                            "file_path": None,
+                            "classification": class_or_skip,  # classification_dict
+                            "extraction": {
+                                "document_type": doc_type,
+                                "data": extraction_data,
+                                "raw_text": None,
+                                "backend": "paneas_v2",
+                            },
+                            "image_correction": correction_info,
+                            "success": True,
+                            "error": None,
+                        }
+                        if extraction_data.get("cpf"):
+                            result["cpf_validation"] = validate_cpf(extraction_data["cpf"])
+                    else:
+                        # extract
+                        result = {
+                            "extraction": {
+                                "document_type": doc_type,
+                                "data": extraction_data,
+                                "raw_text": None,
+                                "backend": "paneas_v2",
+                            },
+                            "image_correction": correction_info,
+                            "result": extraction_data,  # backward compat
+                        }
+                        if extraction_data.get("cpf"):
+                            result["cpf_validation"] = validate_cpf(extraction_data["cpf"])
+
                     reply = {
                         "inference_id": inference_id,
                         "success": True,
@@ -379,12 +783,13 @@ class InferenceServer:
                         "error": None,
                     }
                     inference_metrics_requests_total.labels(
-                        document_type=doc_type, status="success"
+                        operation=operation, status="success"
                     ).inc()
-                    inference_metrics_duration_seconds.labels(
-                        document_type=doc_type
-                    ).observe(batch_time_ms / 1000)
+                    inference_metrics_duration_seconds.labels(operation=operation).observe(
+                        batch_time_ms / 1000
+                    )
                 except Exception as e:
+                    vlm_text_idx += 1
                     reply = {
                         "inference_id": inference_id,
                         "success": False,
@@ -393,10 +798,30 @@ class InferenceServer:
                         "error": str(e),
                     }
                     inference_metrics_requests_total.labels(
-                        document_type=doc_type, status="error"
+                        operation=operation, status="error"
                     ).inc()
-                text_idx += 1
 
+            await self.queue.redis.setex(reply_key, INFERENCE_REPLY_TTL, json.dumps(reply))
+
+        # Reply for requests that errored in preprocessing (not in preprocessed)
+        for i, error_msg in errors.items():
+            # Only handle if not already handled via preprocessed loop
+            already_handled = any(pp[0] == i for pp in preprocessed)
+            if already_handled:
+                continue
+
+            req = batch[i]
+            inference_id = req["inference_id"]
+            reply_key = inference_reply_key(inference_id)
+            operation = req.get("operation", "extract")
+            reply = {
+                "inference_id": inference_id,
+                "success": False,
+                "result": None,
+                "inference_time_ms": batch_time_ms,
+                "error": error_msg,
+            }
+            inference_metrics_requests_total.labels(operation=operation, status="error").inc()
             await self.queue.redis.setex(reply_key, INFERENCE_REPLY_TTL, json.dumps(reply))
 
 
@@ -426,8 +851,8 @@ async def lifespan(app: FastAPI):
 # Health check app
 app = FastAPI(
     title="doc-pipeline Inference Server",
-    description="VLM inference server health check",
-    version="0.1.0",
+    description="Centralized inference server for all GPU models",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -448,8 +873,12 @@ async def health():
         "server_running": server._running,
         "current_batch_size": server._current_batch_size,
         "queue_depth": queue_depth,
-        "model_loaded": server.extractor is not None
-        and server.extractor._model is not None,
+        "models_loaded": {
+            "vlm": server.extractor is not None and server.extractor._model is not None,
+            "classifier": server.classifier is not None,
+            "ocr": server.ocr_engine is not None,
+            "orientation": server.orientation_corrector is not None,
+        },
         "config": {
             "batch_size": server._batch_size,
             "batch_timeout_ms": server._batch_timeout_ms,

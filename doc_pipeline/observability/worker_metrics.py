@@ -6,12 +6,12 @@ API reads and aggregates them in /metrics endpoint.
 """
 
 import asyncio
+import contextlib
 import json
 import time
 from typing import Any
 
 from prometheus_client import REGISTRY
-from prometheus_client.metrics import MetricWrapperBase
 
 # Redis key prefix for worker metrics
 WORKER_METRICS_PREFIX = "metrics:worker:"
@@ -120,11 +120,13 @@ def format_aggregated_metrics(workers_data: dict[str, dict]) -> str:
                 # Add worker_id label
                 labels = sample["labels"].copy()
                 labels["worker_id"] = worker_id
-                all_metrics[metric_name]["samples"].append({
-                    "name": sample["name"],
-                    "labels": labels,
-                    "value": sample["value"],
-                })
+                all_metrics[metric_name]["samples"].append(
+                    {
+                        "name": sample["name"],
+                        "labels": labels,
+                        "value": sample["value"],
+                    }
+                )
 
     # Emit worker_up gauge (1 for each worker with active metrics in Redis)
     lines.append("# HELP doc_pipeline_worker_up Whether the worker is alive (1=up, absent=down)")
@@ -145,9 +147,7 @@ def format_aggregated_metrics(workers_data: dict[str, dict]) -> str:
 
         # Sample lines
         for sample in metric_data["samples"]:
-            labels_str = ",".join(
-                f'{k}="{v}"' for k, v in sorted(sample["labels"].items())
-            )
+            labels_str = ",".join(f'{k}="{v}"' for k, v in sorted(sample["labels"].items()))
             lines.append(f"{sample['name']}{{{labels_str}}} {sample['value']}")
 
         lines.append("")  # Blank line between metrics
@@ -183,17 +183,13 @@ class WorkerMetricsPusher:
         self._running = False
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
 
         # Clean up our key from Redis
         key = f"{WORKER_METRICS_PREFIX}{self.worker_id}"
-        try:
+        with contextlib.suppress(Exception):
             await self.redis.delete(key)
-        except Exception:
-            pass
 
     async def _push_loop(self):
         """Main loop that pushes metrics periodically."""
@@ -203,9 +199,8 @@ class WorkerMetricsPusher:
             except Exception as e:
                 # Log but don't crash
                 import logging
-                logging.getLogger("worker_metrics").warning(
-                    f"Failed to push metrics: {e}"
-                )
+
+                logging.getLogger("worker_metrics").warning(f"Failed to push metrics: {e}")
 
             await asyncio.sleep(self.interval)
 
@@ -245,7 +240,7 @@ async def get_aggregated_worker_metrics(redis_client) -> str:
 
         # Parse and aggregate
         workers_data = {}
-        for key, value in zip(keys, values):
+        for key, value in zip(keys, values, strict=True):
             if value is None:
                 continue
 
@@ -265,7 +260,6 @@ async def get_aggregated_worker_metrics(redis_client) -> str:
 
     except Exception as e:
         import logging
-        logging.getLogger("worker_metrics").warning(
-            f"Failed to aggregate worker metrics: {e}"
-        )
+
+        logging.getLogger("worker_metrics").warning(f"Failed to aggregate worker metrics: {e}")
         return ""

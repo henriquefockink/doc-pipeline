@@ -2,24 +2,23 @@
 Orquestrador principal do pipeline de documentos.
 """
 
+import contextlib
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 import pillow_heif
 from PIL import Image
 
 # Registra suporte a HEIC/HEIF e AVIF
 pillow_heif.register_heif_opener()
-try:
-    pillow_heif.register_avif_opener()
-except AttributeError:
+with contextlib.suppress(AttributeError):
     # AVIF support requires pillow-heif >= 0.10.0
-    pass
+    pillow_heif.register_avif_opener()
 
-from .classifier import ClassifierAdapter
-from .config import ExtractorBackend, Settings, get_settings
-from .extractors import BaseExtractor, QwenVLExtractor
-from .schemas import (
+from .classifier import ClassifierAdapter  # noqa: E402
+from .config import ExtractorBackend, Settings, get_settings  # noqa: E402
+from .extractors import BaseExtractor, QwenVLExtractor  # noqa: E402
+from .schemas import (  # noqa: E402
     ClassificationResult,
     DocumentType,
     ExtractionResult,
@@ -63,12 +62,8 @@ class DocumentPipeline:
             if classifier_model_path
             else self._settings.classifier_model_path
         )
-        self._classifier_model_type = (
-            classifier_model_type or self._settings.classifier_model_type
-        )
-        self._classifier_device = (
-            classifier_device or self._settings.classifier_device
-        )
+        self._classifier_model_type = classifier_model_type or self._settings.classifier_model_type
+        self._classifier_device = classifier_device or self._settings.classifier_device
         self._classifier_fp8 = (
             classifier_fp8 if classifier_fp8 is not None else self._settings.classifier_fp8
         )
@@ -110,6 +105,7 @@ class DocumentPipeline:
                 )
             elif self._extractor_backend == ExtractorBackend.EASY_OCR:
                 from .extractors.easyocr import EasyOCRExtractor
+
                 self._extractor = EasyOCRExtractor(
                     lang=self._settings.ocr_language,
                     use_gpu=self._settings.ocr_use_gpu,
@@ -118,6 +114,7 @@ class DocumentPipeline:
                 )
             elif self._extractor_backend == ExtractorBackend.HYBRID:
                 from .extractors.hybrid import HybridExtractor
+
                 self._extractor = HybridExtractor(
                     model_name=self._settings.extractor_model_qwen,
                     device=self._extractor_device,
@@ -243,8 +240,14 @@ class DocumentPipeline:
         """
         folder = Path(folder)
         extensions = extensions or [
-            "*.jpg", "*.jpeg", "*.png", "*.bmp", "*.webp",
-            "*.heic", "*.heif", "*.avif",  # Formatos de smartphone
+            "*.jpg",
+            "*.jpeg",
+            "*.png",
+            "*.bmp",
+            "*.webp",
+            "*.heic",
+            "*.heif",
+            "*.avif",  # Formatos de smartphone
         ]
 
         # Padrões a ignorar
@@ -255,11 +258,7 @@ class DocumentPipeline:
             images.extend(folder.rglob(ext))
 
         # Filtra arquivos ignorados
-        images = [
-            img
-            for img in images
-            if not any(p in img.name for p in ignore_patterns)
-        ]
+        images = [img for img in images if not any(p in img.name for p in ignore_patterns)]
 
         for img_path in images:
             yield self.process(

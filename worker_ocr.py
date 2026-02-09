@@ -1,29 +1,22 @@
 #!/usr/bin/env python3
 """
-OCR Worker - Processes OCR jobs from Redis queue using PaddleOCR.
+OCR Worker - Processes OCR jobs from Redis queue.
 
-This worker is separate from the main classification worker because:
-1. PaddleOCR is much faster (~0.2s vs 3s)
-2. Uses less VRAM (~2GB vs 16GB)
-3. Different scaling requirements (usually 1 worker is enough)
+Thin queue consumer — all GPU work (EasyOCR, orientation correction, PDF
+conversion) is delegated to the centralized inference server via Redis.
 """
 
 import asyncio
+import contextlib
 import signal
-import sys
 import time
 from pathlib import Path
 
 import sentry_sdk
-from PIL import Image
 
 from doc_pipeline.config import get_settings
 from doc_pipeline.observability import get_logger, get_metrics, setup_logging
-from doc_pipeline.ocr import OCREngine, PDFConverter
-from doc_pipeline.ocr.converter import is_pdf
-from doc_pipeline.preprocessing import OrientationCorrector
-from doc_pipeline.schemas import OCRPageResult, OCRResult
-from doc_pipeline.shared import DeliveryService, JobContext, QueueService
+from doc_pipeline.shared import DeliveryService, InferenceClient, JobContext, QueueService
 from doc_pipeline.shared.constants import QueueName
 
 # Setup
@@ -43,82 +36,32 @@ if settings.sentry_dsn:
 
 
 class OCRWorker:
-    """Worker that processes OCR jobs from Redis queue."""
+    """Stateless OCR worker that delegates to inference server."""
 
     def __init__(self):
         self.settings = get_settings()
         self.queue = QueueService(queue_name=QueueName.OCR)
-        # Pass same queue service to delivery so they share the connection
         self.delivery = DeliveryService(queue_service=self.queue)
+        self._inference_client: InferenceClient | None = None
         self._running = False
-
-        # Lazy-loaded components
-        self._ocr_engine: OCREngine | None = None
-        self._pdf_converter: PDFConverter | None = None
-        self._orientation_corrector: OrientationCorrector | None = None
-
-    @property
-    def ocr_engine(self) -> OCREngine:
-        """Lazy load OCR engine."""
-        if self._ocr_engine is None:
-            self._ocr_engine = OCREngine(
-                lang=self.settings.ocr_language,
-                use_gpu=self.settings.ocr_use_gpu,
-                show_log=False,
-            )
-        return self._ocr_engine
-
-    @property
-    def pdf_converter(self) -> PDFConverter:
-        """Lazy load PDF converter."""
-        if self._pdf_converter is None:
-            # 150 DPI - good balance between quality and speed
-            # 200 DPI = ~6s/page (alta qualidade, lento)
-            # 150 DPI = ~4s/page (boa qualidade, aceitável)
-            # 100 DPI = ~3s/page (qualidade ruim)
-            self._pdf_converter = PDFConverter(dpi=150)
-        return self._pdf_converter
-
-    @property
-    def orientation_corrector(self) -> OrientationCorrector:
-        """Lazy load orientation corrector."""
-        if self._orientation_corrector is None:
-            self._orientation_corrector = OrientationCorrector(
-                use_text_detection=self.settings.orientation_enabled,
-                device=self.settings.orientation_device or self.settings.classifier_device,
-                confidence_threshold=self.settings.orientation_confidence_threshold,
-            )
-        return self._orientation_corrector
-
-    def warmup(self):
-        """Warmup models for faster first inference."""
-        logger.info("warmup_start", component="ocr")
-        self.ocr_engine.warmup()
-        logger.info("warmup_complete", component="ocr")
-
-        if self.settings.orientation_enabled:
-            logger.info("warmup_start", component="orientation")
-            self.orientation_corrector.warmup()
-            logger.info("warmup_complete", component="orientation")
 
     async def run(self):
         """Main worker loop."""
         self._running = True
 
-        # Connect to Redis
         await self.queue.connect()
+
+        # Create inference client (shares queue's Redis connection)
+        self._inference_client = InferenceClient(
+            queue_service=self.queue,
+            timeout=self.settings.inference_timeout_seconds,
+        )
 
         logger.info("worker_ocr_started")
 
-        # Warmup if configured
-        if self.settings.warmup_on_start:
-            self.warmup()
-
         while self._running:
             try:
-                # Wait for job from queue
                 job = await self.queue.dequeue(timeout=5.0)
-
                 if job is None:
                     continue
 
@@ -137,7 +80,7 @@ class OCRWorker:
         logger.info("worker_ocr_stopped")
 
     async def _process_job(self, job: JobContext):
-        """Process a single OCR job."""
+        """Process a single OCR job by delegating to inference server."""
         start_time = time.perf_counter()
         queue_wait_ms = job.queue_wait_ms
 
@@ -149,19 +92,24 @@ class OCRWorker:
         )
 
         try:
-            # Get file path and max pages from job
-            file_path = Path(job.image_path)
             max_pages = job.extra_params.get("max_pages", 10) if job.extra_params else 10
 
-            # Process based on file type
-            if is_pdf(file_path):
-                result = await self._process_pdf(job.request_id, file_path, max_pages)
-            else:
-                result = await self._process_image(job.request_id, file_path)
+            if not Path(job.image_path).exists():
+                raise FileNotFoundError(f"File not found: {job.image_path}")
 
-            # Record success
+            # Delegate to inference server
+            reply = await self._inference_client.request(
+                operation="ocr",
+                image_path=job.image_path,
+                request_id=job.request_id,
+                max_pages=max_pages,
+                auto_rotate=(job.extra_params or {}).get("auto_rotate", True),
+            )
+
+            result_dict = reply["result"]
+
+            # Add processing time
             processing_time_ms = (time.perf_counter() - start_time) * 1000
-            result_dict = result.model_dump()
             result_dict["processing_time_ms"] = processing_time_ms
 
             job.result = result_dict
@@ -173,10 +121,9 @@ class OCRWorker:
                 operation=job.operation,
                 processing_time_ms=processing_time_ms,
                 queue_wait_ms=queue_wait_ms,
-                total_pages=result.total_pages,
+                total_pages=result_dict.get("total_pages"),
             )
 
-            # Record metrics
             metrics.jobs_processed.labels(
                 operation="ocr",
                 status="success",
@@ -206,105 +153,8 @@ class OCRWorker:
         await self.delivery.deliver(job)
 
         # Cleanup temp file
-        try:
+        with contextlib.suppress(Exception):
             Path(job.image_path).unlink(missing_ok=True)
-        except Exception:
-            pass
-
-    async def _process_pdf(
-        self,
-        request_id: str,
-        file_path: Path,
-        max_pages: int,
-    ) -> OCRResult:
-        """Process PDF file."""
-        import time
-
-        # Convert PDF to images
-        t0 = time.perf_counter()
-        images = self.pdf_converter.convert(file_path, max_pages=max_pages)
-        convert_time = (time.perf_counter() - t0) * 1000
-        logger.info(
-            "pdf_converted",
-            request_id=request_id,
-            pages=len(images),
-            convert_time_ms=convert_time,
-        )
-
-        # OCR each page
-        pages = []
-        for i, img in enumerate(images, start=1):
-            t0 = time.perf_counter()
-
-            if self.settings.orientation_enabled:
-                result = self.orientation_corrector.correct(img)
-                if result.was_corrected:
-                    logger.info(
-                        "page_orientation_corrected",
-                        request_id=request_id,
-                        page=i,
-                        rotation=result.rotation_applied.value,
-                        method=result.correction_method,
-                    )
-                img = result.image
-
-            text, confidence = self.ocr_engine.extract_text(img)
-            ocr_time = (time.perf_counter() - t0) * 1000
-            logger.info(
-                "page_ocr_complete",
-                request_id=request_id,
-                page=i,
-                ocr_time_ms=ocr_time,
-                image_size=f"{img.width}x{img.height}",
-            )
-            pages.append(OCRPageResult(
-                page=i,
-                text=text,
-                confidence=confidence,
-            ))
-
-        return OCRResult(
-            request_id=request_id,
-            total_pages=len(pages),
-            pages=pages,
-            processing_time_ms=0,  # Will be set by caller
-            file_type="pdf",
-            language="pt",
-        )
-
-    async def _process_image(
-        self,
-        request_id: str,
-        file_path: Path,
-    ) -> OCRResult:
-        """Process image file."""
-        img = Image.open(file_path)
-
-        if self.settings.orientation_enabled:
-            result = self.orientation_corrector.correct(img)
-            if result.was_corrected:
-                logger.info(
-                    "image_orientation_corrected",
-                    request_id=request_id,
-                    rotation=result.rotation_applied.value,
-                    method=result.correction_method,
-                )
-            img = result.image
-
-        text, confidence = self.ocr_engine.extract_text(img)
-
-        return OCRResult(
-            request_id=request_id,
-            total_pages=1,
-            pages=[OCRPageResult(
-                page=1,
-                text=text,
-                confidence=confidence,
-            )],
-            processing_time_ms=0,
-            file_type="image",
-            language="pt",
-        )
 
     def stop(self):
         """Signal worker to stop."""
@@ -317,14 +167,17 @@ async def health_server(worker: OCRWorker):
     from aiohttp import web
 
     async def health_handler(request):
-        return web.json_response({
-            "status": "healthy",
-            "worker": "ocr",
-            "running": worker._running,
-        })
+        return web.json_response(
+            {
+                "status": "healthy",
+                "worker": "ocr",
+                "running": worker._running,
+            }
+        )
 
     async def metrics_handler(request):
         from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+
         return web.Response(
             body=generate_latest(),
             headers={"Content-Type": CONTENT_TYPE_LATEST},
@@ -349,7 +202,6 @@ async def main():
     """Main entry point."""
     worker = OCRWorker()
 
-    # Setup signal handlers
     def signal_handler(sig, frame):
         logger.info("shutdown_signal_received", signal=sig)
         worker.stop()
@@ -357,7 +209,6 @@ async def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
 
-    # Start health server
     health_runner = await health_server(worker)
 
     try:

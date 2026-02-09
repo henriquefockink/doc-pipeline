@@ -1,4 +1,4 @@
-"""Client for sending VLM inference requests via Redis."""
+"""Client for sending inference requests via Redis."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import uuid
 
 from doc_pipeline.observability import get_logger
 
-from .constants import INFERENCE_REPLY_TTL, QueueName, inference_reply_key
+from .constants import QueueName, inference_reply_key
 from .queue import QueueService
 
 logger = get_logger("inference_client")
@@ -27,48 +27,72 @@ class InferenceTimeoutError(InferenceError):
 
 
 class InferenceClient:
-    """Client that sends VLM inference requests via Redis and waits for replies."""
+    """Client that sends inference requests via Redis and waits for replies."""
 
     def __init__(self, queue_service: QueueService, timeout: float = 30.0):
         self._queue = queue_service
         self._timeout = timeout
 
-    async def extract(self, image_path: str, document_type: str, request_id: str) -> dict:
+    async def request(
+        self,
+        operation: str,
+        image_path: str,
+        request_id: str,
+        document_type: str | None = None,
+        backend: str | None = None,
+        auto_rotate: bool = True,
+        max_pages: int = 10,
+        extract: bool = True,
+        min_confidence: float | None = None,
+    ) -> dict:
         """
         Send inference request and wait for reply via Redis polling.
 
-        1. Generate inference_id
-        2. LPUSH request to queue:doc:inference
-        3. Poll inference:result:{inference_id} until reply arrives
-        4. Return result dict
+        Args:
+            operation: "classify", "extract", "process", or "ocr"
+            image_path: Path to image/PDF file on shared volume
+            request_id: Job request ID for logging
+            document_type: Document type (for extract operation)
+            backend: Extraction backend ("vlm", "ocr", "hybrid")
+            auto_rotate: Whether to auto-rotate image
+            max_pages: Max pages for OCR/PDF
+            extract: Whether to extract data (for process operation)
+            min_confidence: Min classification confidence (for process)
+
+        Returns:
+            Reply dict with "success", "result", "error", etc.
         """
         inference_id = str(uuid.uuid4())
         reply_key = inference_reply_key(inference_id)
 
-        request = json.dumps(
-            {
-                "inference_id": inference_id,
-                "request_id": request_id,
-                "document_type": document_type,
-                "image_path": image_path,
-            }
-        )
-        await self._queue.redis.lpush(QueueName.INFERENCE, request)
+        payload = {
+            "inference_id": inference_id,
+            "request_id": request_id,
+            "operation": operation,
+            "image_path": image_path,
+            "document_type": document_type,
+            "backend": backend,
+            "auto_rotate": auto_rotate,
+            "max_pages": max_pages,
+            "extract": extract,
+            "min_confidence": min_confidence,
+        }
+        await self._queue.redis.lpush(QueueName.INFERENCE, json.dumps(payload))
         logger.debug(
             "inference_request_sent",
             inference_id=inference_id,
             request_id=request_id,
+            operation=operation,
             document_type=document_type,
         )
 
-        # Poll for reply (same pattern as API wait_for_result)
-        poll_interval = 0.1  # 100ms between polls (inference is fast)
+        # Poll for reply
+        poll_interval = 0.1  # 100ms between polls
         end_time = asyncio.get_event_loop().time() + self._timeout
 
         while True:
             cached = await self._queue.redis.get(reply_key)
             if cached:
-                # Clean up the key
                 await self._queue.redis.delete(reply_key)
                 reply = json.loads(cached)
                 if not reply["success"]:
@@ -76,6 +100,7 @@ class InferenceClient:
                 logger.debug(
                     "inference_reply_received",
                     inference_id=inference_id,
+                    operation=operation,
                     inference_time_ms=reply.get("inference_time_ms"),
                 )
                 return reply
@@ -85,3 +110,12 @@ class InferenceClient:
                 raise InferenceTimeoutError(f"Inference timeout after {self._timeout}s")
 
             await asyncio.sleep(min(poll_interval, remaining))
+
+    async def extract(self, image_path: str, document_type: str, request_id: str) -> dict:
+        """Backward-compatible wrapper: send VLM extract request."""
+        return await self.request(
+            operation="extract",
+            image_path=image_path,
+            request_id=request_id,
+            document_type=document_type,
+        )

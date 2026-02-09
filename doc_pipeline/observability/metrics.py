@@ -1,11 +1,10 @@
 """Métricas Prometheus para a API."""
 
 import time
-from typing import Callable
+from collections.abc import Callable
 
 from fastapi import Request, Response
 from fastapi.responses import PlainTextResponse
-from fastapi.routing import APIRoute
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
     Counter,
@@ -178,9 +177,7 @@ class PrometheusMiddleware(BaseHTTPMiddleware):
             if normalized in self.API_ENDPOINTS:
                 return True
             # Check for /jobs/{id}/status pattern
-            if normalized.startswith("/jobs/"):
-                return True
-            return False
+            return normalized.startswith("/jobs/")
 
         return True
 

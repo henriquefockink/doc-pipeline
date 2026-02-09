@@ -111,9 +111,8 @@ class EasyOCRExtractor(BaseExtractor):
                     data["rg"] = rg_match.group(0)
 
             # Naturalidade
-            if "naturalidade" in line_lower or "natural" in line_lower:
-                if i + 1 < len(lines):
-                    data["naturalidade"] = lines[i + 1].strip()
+            if ("naturalidade" in line_lower or "natural" in line_lower) and i + 1 < len(lines):
+                data["naturalidade"] = lines[i + 1].strip()
 
             # Órgão expedidor
             if "ssp" in line_lower or "secretaria" in line_lower:
@@ -170,9 +169,8 @@ class EasyOCRExtractor(BaseExtractor):
                 data["categoria"] = cat_match.group(1)
 
             # Observações
-            if "observ" in line_lower or "obs" in line_lower:
-                if i + 1 < len(lines):
-                    data["observacoes"] = lines[i + 1].strip()
+            if ("observ" in line_lower or "obs" in line_lower) and i + 1 < len(lines):
+                data["observacoes"] = lines[i + 1].strip()
 
         return data
 
@@ -228,9 +226,8 @@ class EasyOCRExtractor(BaseExtractor):
                 data["cpf"] = cpf_match.group(1)
 
             # Naturalidade
-            if "naturalidade" in line_lower or "natural" in line_lower:
-                if i + 1 < len(lines):
-                    data["naturalidade"] = lines[i + 1].strip()
+            if ("naturalidade" in line_lower or "natural" in line_lower) and i + 1 < len(lines):
+                data["naturalidade"] = lines[i + 1].strip()
 
             # Órgão expedidor
             if "ssp" in line_lower or "secretaria" in line_lower:

@@ -47,9 +47,11 @@ class QwenVLExtractor(BaseExtractor):
         """Get the appropriate model class based on model name."""
         if "Qwen3-VL" in self.model_name:
             from transformers import Qwen3VLForConditionalGeneration
+
             return Qwen3VLForConditionalGeneration
         else:
             from transformers import Qwen2_5_VLForConditionalGeneration
+
             return Qwen2_5_VLForConditionalGeneration
 
     def load_model(self) -> None:
@@ -57,8 +59,8 @@ class QwenVLExtractor(BaseExtractor):
         if self._model is not None:
             return
 
-        from transformers import AutoProcessor
         import torch
+        from transformers import AutoProcessor
 
         print(f"Carregando modelo {self.model_name}...")
 
@@ -98,6 +100,7 @@ class QwenVLExtractor(BaseExtractor):
             self._processor = None
 
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -135,8 +138,8 @@ class QwenVLExtractor(BaseExtractor):
         generated_ids = self._model.generate(**inputs, max_new_tokens=1024)
 
         generated_ids_trimmed = [
-            out_ids[len(in_ids):]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=True)
         ]
 
         output_text = self._processor.batch_decode(

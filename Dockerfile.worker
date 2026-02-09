@@ -1,0 +1,36 @@
+# Lightweight Dockerfile for stateless workers (DocID + OCR)
+# No GPU, no PyTorch — all inference delegated to inference server
+FROM python:3.11-slim
+
+WORKDIR /app
+
+# Install minimal system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies (lightweight, no GPU)
+COPY requirements-worker.txt .
+RUN pip install --no-cache-dir -r requirements-worker.txt
+
+# Copy application code
+COPY worker_docid.py .
+COPY worker_ocr.py .
+COPY doc_pipeline/ ./doc_pipeline/
+
+# Create temp directory
+RUN mkdir -p /tmp/doc-pipeline
+
+# Environment variables
+ENV PYTHONUNBUFFERED=1
+ENV DOC_PIPELINE_LOG_JSON=true
+
+# Default health check port (overridden per service in docker-compose)
+EXPOSE 9010
+
+# Health check (port overridden by docker-compose healthcheck)
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD curl -f http://localhost:${DOC_PIPELINE_WORKER_HEALTH_PORT:-9010}/health || exit 1
+
+# Default: run docid worker (overridden in docker-compose for OCR worker)
+CMD ["python", "worker_docid.py"]

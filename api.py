@@ -13,7 +13,7 @@ import os
 import tempfile
 import uuid
 from contextlib import asynccontextmanager
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
 
@@ -22,7 +22,7 @@ import sentry_sdk
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from PIL import Image
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
@@ -69,6 +69,7 @@ if settings.sentry_dsn:
 # Global queue service
 queue_service: QueueService | None = None
 
+
 # Rate limiter - key by client IP or API key
 def get_rate_limit_key(request: Request) -> str:
     """Get rate limit key from API key header or IP address."""
@@ -76,6 +77,7 @@ def get_rate_limit_key(request: Request) -> str:
     if api_key:
         return f"apikey:{api_key[:8]}"  # Use first 8 chars of API key
     return get_remote_address(request)
+
 
 # Create limiter — only use Redis backend when rate limiting is actually enabled.
 # When disabled, use memory:// to avoid creating a separate Redis connection pool
@@ -97,14 +99,14 @@ else:
     )
 
 
-class DeliveryMode(str, Enum):
+class DeliveryMode(StrEnum):
     """Delivery modes for job results."""
 
     SYNC = "sync"
     WEBHOOK = "webhook"
 
 
-class ExtractorBackend(str, Enum):
+class ExtractorBackend(StrEnum):
     """
     Extractor backends for document data extraction.
 
@@ -200,7 +202,7 @@ async def save_temp_image(upload_file: UploadFile) -> str:
         img = Image.open(io.BytesIO(contents))
         img.verify()
     except Exception as e:
-        raise ValueError(f"Invalid image file: {e}")
+        raise ValueError(f"Invalid image file: {e}") from e
 
     # Generate unique filename
     ext = os.path.splitext(upload_file.filename or "image.jpg")[1] or ".jpg"
@@ -240,7 +242,7 @@ async def save_temp_file(upload_file: UploadFile, allowed_extensions: set[str]) 
             img = Image.open(io.BytesIO(contents))
             img.verify()
         except Exception as e:
-            raise ValueError(f"Invalid image file: {e}")
+            raise ValueError(f"Invalid image file: {e}") from e
 
     # Generate unique filename
     filename = f"{uuid.uuid4()}{ext}"
@@ -268,14 +270,16 @@ async def wait_for_result(request_id: str, timeout: float) -> dict:
         try:
             cached = await queue_service.get_cached_result(request_id)
         except Exception as e:
-            logger.error("poll_redis_error", error=str(e), error_type=type(e).__name__, request_id=request_id)
+            logger.error(
+                "poll_redis_error", error=str(e), error_type=type(e).__name__, request_id=request_id
+            )
             raise RuntimeError(str(e)) from e
         if cached:
             return json.loads(cached)
 
         remaining = end_time - asyncio.get_event_loop().time()
         if remaining <= 0:
-            raise asyncio.TimeoutError()
+            raise TimeoutError()
 
         await asyncio.sleep(min(poll_interval, remaining))
 
@@ -355,8 +359,12 @@ async def list_classes(auth: AuthInfo = Depends(require_api_key)):
 async def classify(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
-    delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
-    webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
+    delivery_mode: Annotated[
+        DeliveryMode, Query(description="Modo de entrega")
+    ] = DeliveryMode.SYNC,
+    webhook_url: Annotated[
+        str | None, Query(description="URL para webhook (se modo=webhook)")
+    ] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
     auth: AuthInfo = Depends(require_api_key),
 ):
@@ -425,11 +433,11 @@ async def classify(
         settings = get_settings()
         try:
             result = await wait_for_result(job.request_id, settings.sync_timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise HTTPException(
                 status_code=504,
                 detail=f"Timeout waiting for result after {settings.sync_timeout_seconds}s",
-            )
+            ) from None
 
         if result.get("error"):
             raise HTTPException(status_code=500, detail=result["error"])
@@ -450,7 +458,7 @@ async def classify(
             status="503",
         ).inc()
         logger.warning("classify_queue_full", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except HTTPException:
         raise
@@ -458,7 +466,7 @@ async def classify(
     except (ConnectionError, redis.exceptions.ConnectionError) as e:
         metrics.requests_by_client.labels(client=client, endpoint="/classify", status="503").inc()
         logger.error("classify_connection_error", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except Exception as e:
         sentry_sdk.capture_exception(e)
@@ -474,7 +482,7 @@ async def classify(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/extract")
@@ -483,11 +491,19 @@ async def extract(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
     doc_type: Annotated[str, Query(description="Tipo do documento (rg_frente, cnh_frente, etc)")],
-    backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
-    validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
+    backend: Annotated[
+        ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")
+    ] = ExtractorBackend.HYBRID,
+    validate_cpf: Annotated[
+        bool, Query(description="Validar CPF extraído (dígitos verificadores)")
+    ] = True,
     auto_rotate: Annotated[bool, Query(description="Corrigir orientação automaticamente")] = True,
-    delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
-    webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
+    delivery_mode: Annotated[
+        DeliveryMode, Query(description="Modo de entrega")
+    ] = DeliveryMode.SYNC,
+    webhook_url: Annotated[
+        str | None, Query(description="URL para webhook (se modo=webhook)")
+    ] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
     auth: AuthInfo = Depends(require_api_key),
 ):
@@ -535,7 +551,7 @@ async def extract(
         raise HTTPException(
             status_code=400,
             detail=f"Tipo de documento inválido: {doc_type}. Valores válidos: {[d.value for d in DocumentType]}",
-        )
+        ) from None
 
     # Validate webhook mode
     if delivery_mode == DeliveryMode.WEBHOOK and not webhook_url:
@@ -558,7 +574,11 @@ async def extract(
             delivery_mode=delivery_mode.value,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
-            extra_params={"backend": backend.value, "validate_cpf": validate_cpf, "auto_rotate": auto_rotate},
+            extra_params={
+                "backend": backend.value,
+                "validate_cpf": validate_cpf,
+                "auto_rotate": auto_rotate,
+            },
         )
 
         # Enqueue
@@ -590,11 +610,11 @@ async def extract(
         settings = get_settings()
         try:
             result = await wait_for_result(job.request_id, settings.sync_timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise HTTPException(
                 status_code=504,
                 detail=f"Timeout waiting for result after {settings.sync_timeout_seconds}s",
-            )
+            ) from None
 
         if result.get("error"):
             raise HTTPException(status_code=500, detail=result["error"])
@@ -614,7 +634,7 @@ async def extract(
             status="503",
         ).inc()
         logger.warning("extract_queue_full", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except HTTPException:
         raise
@@ -622,7 +642,7 @@ async def extract(
     except (ConnectionError, redis.exceptions.ConnectionError) as e:
         metrics.requests_by_client.labels(client=client, endpoint="/extract", status="503").inc()
         logger.error("extract_connection_error", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except Exception as e:
         sentry_sdk.capture_exception(e)
@@ -639,7 +659,7 @@ async def extract(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.post("/process")
@@ -649,11 +669,19 @@ async def process(
     arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
     extract: Annotated[bool, Query(description="Se deve extrair dados")] = True,
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Confiança mínima")] = 0.5,
-    backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
-    validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
+    backend: Annotated[
+        ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")
+    ] = ExtractorBackend.HYBRID,
+    validate_cpf: Annotated[
+        bool, Query(description="Validar CPF extraído (dígitos verificadores)")
+    ] = True,
     auto_rotate: Annotated[bool, Query(description="Corrigir orientação automaticamente")] = True,
-    delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
-    webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
+    delivery_mode: Annotated[
+        DeliveryMode, Query(description="Modo de entrega")
+    ] = DeliveryMode.SYNC,
+    webhook_url: Annotated[
+        str | None, Query(description="URL para webhook (se modo=webhook)")
+    ] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
     auth: AuthInfo = Depends(require_api_key),
 ):
@@ -703,7 +731,11 @@ async def process(
             delivery_mode=delivery_mode.value,
             webhook_url=webhook_url,
             correlation_id=correlation_id,
-            extra_params={"backend": backend.value, "validate_cpf": validate_cpf, "auto_rotate": auto_rotate},
+            extra_params={
+                "backend": backend.value,
+                "validate_cpf": validate_cpf,
+                "auto_rotate": auto_rotate,
+            },
         )
 
         # Enqueue
@@ -735,11 +767,11 @@ async def process(
         settings = get_settings()
         try:
             result = await wait_for_result(job.request_id, settings.sync_timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise HTTPException(
                 status_code=504,
                 detail=f"Timeout waiting for result after {settings.sync_timeout_seconds}s",
-            )
+            ) from None
 
         if result.get("error") or result.get("result") is None:
             error_detail = result.get("error") or "Processing failed (no result)"
@@ -760,7 +792,7 @@ async def process(
             status="503",
         ).inc()
         logger.warning("process_queue_full", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except HTTPException:
         raise
@@ -768,7 +800,7 @@ async def process(
     except (ConnectionError, redis.exceptions.ConnectionError) as e:
         metrics.requests_by_client.labels(client=client, endpoint="/process", status="503").inc()
         logger.error("process_connection_error", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except Exception as e:
         sentry_sdk.capture_exception(e)
@@ -784,7 +816,7 @@ async def process(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 # DocID allowed file extensions (images + PDF)
@@ -800,8 +832,12 @@ async def ocr(
     request: Request,
     arquivo: Annotated[UploadFile, File(description="PDF ou imagem para OCR")],
     max_pages: Annotated[int, Query(ge=1, le=50, description="Máximo de páginas (PDF)")] = 10,
-    delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
-    webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
+    delivery_mode: Annotated[
+        DeliveryMode, Query(description="Modo de entrega")
+    ] = DeliveryMode.SYNC,
+    webhook_url: Annotated[
+        str | None, Query(description="URL para webhook (se modo=webhook)")
+    ] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
     auth: AuthInfo = Depends(require_api_key),
 ):
@@ -870,11 +906,11 @@ async def ocr(
         settings = get_settings()
         try:
             result = await wait_for_result(job.request_id, settings.sync_timeout_seconds)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             raise HTTPException(
                 status_code=504,
                 detail=f"Timeout waiting for OCR result after {settings.sync_timeout_seconds}s",
-            )
+            ) from None
 
         if result.get("error"):
             raise HTTPException(status_code=500, detail=result["error"])
@@ -894,7 +930,7 @@ async def ocr(
             status="503",
         ).inc()
         logger.warning("ocr_queue_full", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except HTTPException:
         raise
@@ -902,7 +938,7 @@ async def ocr(
     except (ConnectionError, redis.exceptions.ConnectionError) as e:
         metrics.requests_by_client.labels(client=client, endpoint="/ocr", status="503").inc()
         logger.error("ocr_connection_error", error=str(e), client=client)
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=503, detail=str(e)) from e
 
     except Exception as e:
         sentry_sdk.capture_exception(e)
@@ -918,7 +954,7 @@ async def ocr(
             filename=arquivo.filename,
             client=client,
         )
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail=str(e)) from e
 
 
 @app.get("/jobs/{request_id}/status")

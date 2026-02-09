@@ -148,7 +148,7 @@ The inference server (`inference_server.py`) collects VLM requests into batches 
 4. Publishes replies to individual Redis keys (`inference:result:{id}`)
 5. Workers poll their reply key
 
-Config: `INFERENCE_BATCH_SIZE=8`, `WORKER_CONCURRENT_JOBS=4`, `INFERENCE_TIMEOUT=30s`
+Config: `INFERENCE_BATCH_SIZE=8`, `WORKER_CONCURRENT_JOBS=4`, `INFERENCE_TIMEOUT=120s`
 
 ## Configuration
 

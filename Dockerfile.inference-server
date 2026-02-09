@@ -1,17 +1,22 @@
-# Dockerfile for Inference Server (GPU required, VLM only)
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# Dockerfile for Centralized Inference Server (GPU required)
+# Hosts ALL GPU models: EfficientNet, EasyOCR, Qwen VLM, orientation corrector
+FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
 
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (including EasyOCR requirements)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
     libgl1 \
     libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies (VLM + Redis + API only, no easyocr/doctr)
+# Install Python dependencies (VLM + EasyOCR + Redis + API)
 RUN pip install --no-cache-dir \
     "transformers>=4.57.0" \
     "accelerate>=0.26.0" \
@@ -23,17 +28,20 @@ RUN pip install --no-cache-dir \
     "uvicorn>=0.27.0" \
     "structlog>=24.0.0" \
     "prometheus-client>=0.20.0" \
+    "sentry-sdk[fastapi]>=2.0.0" \
     "pillow>=10.0.0" \
     "pillow-heif>=0.16.0" \
     "redis[hiredis]>=5.0.0" \
-    "httpx>=0.27.0"
+    "httpx>=0.27.0" \
+    "easyocr>=1.7.0" \
+    "PyMuPDF>=1.24.0"
 
 # Copy application code
 COPY inference_server.py .
 COPY doc_pipeline/ ./doc_pipeline/
 
 # Create directories
-RUN mkdir -p /tmp/doc-pipeline
+RUN mkdir -p /tmp/doc-pipeline /app/models
 
 # Environment variables
 ENV PYTHONUNBUFFERED=1

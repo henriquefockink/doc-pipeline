@@ -15,7 +15,7 @@ def _extract_digits(cpf: str) -> str:
 
 def _calculate_check_digit(digits: str, weights: list[int]) -> int:
     """Calculate a CPF check digit."""
-    total = sum(int(d) * w for d, w in zip(digits, weights))
+    total = sum(int(d) * w for d, w in zip(digits, weights, strict=True))
     remainder = total % 11
     return 0 if remainder < 2 else 11 - remainder
 
@@ -57,10 +57,7 @@ def is_valid_cpf(cpf: str | None) -> bool:
     weights2 = [11, 10, 9, 8, 7, 6, 5, 4, 3, 2]
     check2 = _calculate_check_digit(digits[:10], weights2)
 
-    if int(digits[10]) != check2:
-        return False
-
-    return True
+    return int(digits[10]) == check2
 
 
 def normalize_cpf(cpf: str | None) -> str | None:

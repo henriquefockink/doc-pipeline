@@ -104,9 +104,7 @@ class OrientationCorrector:
             if text_rotation != RotationAngle.NONE:
                 image = text_corrected
                 total_rotation = RotationAngle((total_rotation.value + text_rotation.value) % 360)
-                correction_method = (
-                    correction_method + "+text" if correction_method else "text"
-                )
+                correction_method = correction_method + "+text" if correction_method else "text"
                 confidence = text_confidence
                 logger.info(
                     "text_orientation_corrected",
@@ -241,7 +239,7 @@ class OrientationCorrector:
             return None
 
         # Text appears vertical → try both 90° rotations
-        img_cw = np.ascontiguousarray(np.rot90(img_array, k=3))   # 90° CW
+        img_cw = np.ascontiguousarray(np.rot90(img_array, k=3))  # 90° CW
         img_ccw = np.ascontiguousarray(np.rot90(img_array, k=1))  # 90° CCW
 
         ratio_cw, _ = self._avg_box_wh_ratio(img_cw)
@@ -267,7 +265,9 @@ class OrientationCorrector:
             return (RotationAngle.CCW_90, 90, ratio_ccw)
 
         # Neither rotation makes text horizontal
-        logger.info("textbox_90_inconclusive", ratio_cw=round(ratio_cw, 2), ratio_ccw=round(ratio_ccw, 2))
+        logger.info(
+            "textbox_90_inconclusive", ratio_cw=round(ratio_cw, 2), ratio_ccw=round(ratio_ccw, 2)
+        )
         return None
 
     def _tiebreak_with_ocr(
@@ -280,16 +280,8 @@ class OrientationCorrector:
         results_cw = self._ocr_engine.reader.readtext(img_cw)
         results_ccw = self._ocr_engine.reader.readtext(img_ccw)
 
-        conf_cw = (
-            sum(r[2] for r in results_cw) / len(results_cw)
-            if results_cw
-            else 0.0
-        )
-        conf_ccw = (
-            sum(r[2] for r in results_ccw) / len(results_ccw)
-            if results_ccw
-            else 0.0
-        )
+        conf_cw = sum(r[2] for r in results_cw) / len(results_cw) if results_cw else 0.0
+        conf_ccw = sum(r[2] for r in results_ccw) / len(results_ccw) if results_ccw else 0.0
 
         logger.info(
             "textbox_90_tiebreak_ocr",

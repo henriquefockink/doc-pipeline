@@ -2,12 +2,12 @@
 Schemas Pydantic para validação de dados extraídos.
 """
 
-from enum import Enum
+from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class DocumentType(str, Enum):
+class DocumentType(StrEnum):
     """Tipos de documentos suportados."""
 
     # RG variants
@@ -60,20 +60,12 @@ class RGData(BaseModel):
     nome: str | None = Field(default=None, description="Nome completo")
     nome_pai: str | None = Field(default=None, description="Nome do pai")
     nome_mae: str | None = Field(default=None, description="Nome da mãe")
-    data_nascimento: str | None = Field(
-        default=None, description="Data de nascimento (DD/MM/AAAA)"
-    )
-    naturalidade: str | None = Field(
-        default=None, description="Cidade/Estado de nascimento"
-    )
+    data_nascimento: str | None = Field(default=None, description="Data de nascimento (DD/MM/AAAA)")
+    naturalidade: str | None = Field(default=None, description="Cidade/Estado de nascimento")
     cpf: str | None = Field(default=None, description="CPF (###.###.###-##)")
     rg: str | None = Field(default=None, description="Número do RG")
-    data_expedicao: str | None = Field(
-        default=None, description="Data de expedição (DD/MM/AAAA)"
-    )
-    orgao_expedidor: str | None = Field(
-        default=None, description="Órgão expedidor (ex: SSP-SP)"
-    )
+    data_expedicao: str | None = Field(default=None, description="Data de expedição (DD/MM/AAAA)")
+    orgao_expedidor: str | None = Field(default=None, description="Órgão expedidor (ex: SSP-SP)")
 
 
 class CNHData(BaseModel):
@@ -81,25 +73,13 @@ class CNHData(BaseModel):
 
     nome: str | None = Field(default=None, description="Nome completo")
     cpf: str | None = Field(default=None, description="CPF (###.###.###-##)")
-    data_nascimento: str | None = Field(
-        default=None, description="Data de nascimento (DD/MM/AAAA)"
-    )
-    doc_identidade: str | None = Field(
-        default=None, description="Documento de identidade (RG)"
-    )
-    numero_registro: str | None = Field(
-        default=None, description="Número de registro da CNH"
-    )
-    numero_espelho: str | None = Field(
-        default=None, description="Número do espelho da CNH"
-    )
+    data_nascimento: str | None = Field(default=None, description="Data de nascimento (DD/MM/AAAA)")
+    doc_identidade: str | None = Field(default=None, description="Documento de identidade (RG)")
+    numero_registro: str | None = Field(default=None, description="Número de registro da CNH")
+    numero_espelho: str | None = Field(default=None, description="Número do espelho da CNH")
     validade: str | None = Field(default=None, description="Data de validade (DD/MM/AAAA)")
-    categoria: str | None = Field(
-        default=None, description="Categoria da CNH (A, B, AB, C, D, E)"
-    )
-    observacoes: str | None = Field(
-        default=None, description="Observações/restrições"
-    )
+    categoria: str | None = Field(default=None, description="Categoria da CNH (A, B, AB, C, D, E)")
+    observacoes: str | None = Field(default=None, description="Observações/restrições")
     primeira_habilitacao: str | None = Field(
         default=None, description="Data da primeira habilitação (DD/MM/AAAA)"
     )
@@ -111,19 +91,11 @@ class CINData(BaseModel):
     nome: str | None = Field(default=None, description="Nome completo")
     nome_pai: str | None = Field(default=None, description="Nome do pai")
     nome_mae: str | None = Field(default=None, description="Nome da mãe")
-    data_nascimento: str | None = Field(
-        default=None, description="Data de nascimento (DD/MM/AAAA)"
-    )
-    naturalidade: str | None = Field(
-        default=None, description="Cidade/Estado de nascimento"
-    )
+    data_nascimento: str | None = Field(default=None, description="Data de nascimento (DD/MM/AAAA)")
+    naturalidade: str | None = Field(default=None, description="Cidade/Estado de nascimento")
     cpf: str | None = Field(default=None, description="CPF (###.###.###-##)")
-    data_expedicao: str | None = Field(
-        default=None, description="Data de expedição (DD/MM/AAAA)"
-    )
-    orgao_expedidor: str | None = Field(
-        default=None, description="Órgão expedidor (ex: SSP-SP)"
-    )
+    data_expedicao: str | None = Field(default=None, description="Data de expedição (DD/MM/AAAA)")
+    orgao_expedidor: str | None = Field(default=None, description="Órgão expedidor (ex: SSP-SP)")
 
 
 class ImageCorrection(BaseModel):
@@ -157,9 +129,7 @@ class ExtractionResult(BaseModel):
 
     document_type: DocumentType = Field(description="Tipo do documento")
     data: RGData | CNHData | CINData = Field(description="Dados extraídos")
-    raw_text: str | None = Field(
-        default=None, description="Texto bruto extraído (para debug)"
-    )
+    raw_text: str | None = Field(default=None, description="Texto bruto extraído (para debug)")
     backend: str = Field(description="Backend usado para extração")
 
 

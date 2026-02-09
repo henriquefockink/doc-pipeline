@@ -27,7 +27,8 @@ RUN pip install --no-cache-dir \
     pillow-heif>=0.16.0 \
     redis[hiredis]>=5.0.0 \
     httpx>=0.27.0 \
-    slowapi>=0.1.9
+    slowapi>=0.1.9 \
+    "sentry-sdk[fastapi]>=2.0.0"
 
 # Copy application code
 COPY api.py .

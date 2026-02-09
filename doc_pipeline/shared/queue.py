@@ -103,7 +103,12 @@ class QueueService:
 
         _, job_json = result
         job = JobContext.from_json(job_json)
-        logger.debug("job_dequeued", request_id=job.request_id, operation=job.operation, queue=self._queue_name)
+        logger.debug(
+            "job_dequeued",
+            request_id=job.request_id,
+            operation=job.operation,
+            queue=self._queue_name,
+        )
         return job
 
     async def move_to_dlq(self, job: JobContext, error: str) -> None:

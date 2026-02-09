@@ -10,7 +10,7 @@ import httpx
 from doc_pipeline.config import get_settings
 from doc_pipeline.observability import get_logger, get_metrics
 
-from .constants import WEBHOOK_MAX_RETRIES, WEBHOOK_TIMEOUT
+from .constants import WEBHOOK_TIMEOUT
 from .job_context import JobContext
 from .queue import QueueService, get_queue_service
 

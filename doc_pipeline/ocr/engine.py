@@ -77,10 +77,7 @@ class OCREngine:
             Tuple of (extracted_text, average_confidence)
         """
         # Convert to numpy array if PIL Image
-        if isinstance(image, Image.Image):
-            img_array = np.array(image)
-        else:
-            img_array = str(image)
+        img_array = np.array(image) if isinstance(image, Image.Image) else str(image)
 
         # Run OCR
         # EasyOCR returns list of (bbox, text, confidence)
@@ -119,10 +116,7 @@ class OCREngine:
         Returns:
             List of dicts with keys: text, confidence, bbox (x1,y1,x2,y2)
         """
-        if isinstance(image, Image.Image):
-            img_array = np.array(image)
-        else:
-            img_array = str(image)
+        img_array = np.array(image) if isinstance(image, Image.Image) else str(image)
 
         result = self.reader.readtext(img_array)
 
@@ -140,16 +134,18 @@ class OCREngine:
                 x_coords = [p[0] for p in bbox]
                 y_coords = [p[1] for p in bbox]
 
-                extractions.append({
-                    "text": text,
-                    "confidence": confidence,
-                    "bbox": {
-                        "x1": min(x_coords),
-                        "y1": min(y_coords),
-                        "x2": max(x_coords),
-                        "y2": max(y_coords),
-                    },
-                })
+                extractions.append(
+                    {
+                        "text": text,
+                        "confidence": confidence,
+                        "bbox": {
+                            "x1": min(x_coords),
+                            "y1": min(y_coords),
+                            "x2": max(x_coords),
+                            "y2": max(y_coords),
+                        },
+                    }
+                )
 
         return extractions
 

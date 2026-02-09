@@ -13,7 +13,7 @@ from PIL import Image
 from ..schemas import ClassificationResult, DocumentType
 
 if TYPE_CHECKING:
-    from .classificar import ClassificadorDocumentos
+    pass
 
 
 class ClassifierAdapter:
@@ -71,8 +71,6 @@ class ClassifierAdapter:
             confidence=result["confianca"],
         )
 
-    def classify_batch(
-        self, images: list[str | Path | Image.Image]
-    ) -> list[ClassificationResult]:
+    def classify_batch(self, images: list[str | Path | Image.Image]) -> list[ClassificationResult]:
         """Classifica múltiplas imagens."""
         return [self.classify(img) for img in images]

@@ -46,6 +46,7 @@ class HybridExtractor(BaseExtractor):
         """Get or lazy load OCR engine."""
         if self._ocr_engine is None:
             from ..ocr import OCREngine
+
             self._ocr_engine = OCREngine(lang="pt", use_gpu=True)
         return self._ocr_engine
 
@@ -53,9 +54,11 @@ class HybridExtractor(BaseExtractor):
         """Get the appropriate model class based on model name."""
         if "Qwen3-VL" in self.model_name:
             from transformers import Qwen3VLForConditionalGeneration
+
             return Qwen3VLForConditionalGeneration
         else:
             from transformers import Qwen2_5_VLForConditionalGeneration
+
             return Qwen2_5_VLForConditionalGeneration
 
     def load_model(self) -> None:
@@ -63,8 +66,8 @@ class HybridExtractor(BaseExtractor):
         if self._model is not None:
             return
 
-        from transformers import AutoProcessor
         import torch
+        from transformers import AutoProcessor
 
         print(f"[Hybrid] Carregando modelo {self.model_name}...")
 
@@ -98,6 +101,7 @@ class HybridExtractor(BaseExtractor):
             self._processor = None
 
             import torch
+
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
@@ -135,8 +139,8 @@ class HybridExtractor(BaseExtractor):
         generated_ids = self._model.generate(**inputs, max_new_tokens=1024)
 
         generated_ids_trimmed = [
-            out_ids[len(in_ids):]
-            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
+            out_ids[len(in_ids) :]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids, strict=True)
         ]
 
         output_text = self._processor.batch_decode(
@@ -174,7 +178,7 @@ class HybridExtractor(BaseExtractor):
             return None
 
         # Remove tudo exceto dígitos
-        digits = re.sub(r'\D', '', cpf)
+        digits = re.sub(r"\D", "", cpf)
 
         if len(digits) != 11:
             return None
@@ -184,13 +188,13 @@ class HybridExtractor(BaseExtractor):
     def _extract_cpf_from_text(self, text: str) -> str | None:
         """Extrai CPF do texto usando regex. Retorna CPF normalizado ou None."""
         # Padrão 1: CPF completo com pontuação (###.###.###-##)
-        cpf_pattern = r'\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b'
+        cpf_pattern = r"\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b"
         matches = re.findall(cpf_pattern, text)
         if matches:
             return matches[0]
 
         # Padrão 2: CPF com barra (#########/##) - comum em RGs antigos
-        cpf_barra_pattern = r'\b(\d{9})/(\d{2})\b'
+        cpf_barra_pattern = r"\b(\d{9})/(\d{2})\b"
         matches = re.findall(cpf_barra_pattern, text)
         if matches:
             digits = matches[0][0]
@@ -198,7 +202,7 @@ class HybridExtractor(BaseExtractor):
             return f"{digits[:3]}.{digits[3:6]}.{digits[6:9]}-{verifier}"
 
         # Padrão 3: 11 dígitos consecutivos (sem formatação)
-        digits_pattern = r'\b(\d{11})\b'
+        digits_pattern = r"\b(\d{11})\b"
         matches = re.findall(digits_pattern, text)
         for match in matches:
             cpf = self._normalize_cpf(match)
@@ -206,20 +210,20 @@ class HybridExtractor(BaseExtractor):
                 return cpf
 
         # Padrão 4: CPF fragmentado em linhas próximas ao label "CPF"
-        lines = text.split('\n')
+        lines = text.split("\n")
         for i, line in enumerate(lines):
-            if 'CPF' in line.upper() and i + 3 < len(lines):
+            if "CPF" in line.upper() and i + 3 < len(lines):
                 parts = []
                 for j in range(i + 1, min(i + 6, len(lines))):
                     next_line = lines[j].strip()
-                    digits = re.findall(r'[\d]+', next_line)
+                    digits = re.findall(r"[\d]+", next_line)
                     if digits:
                         parts.extend(digits)
-                    joined = ''.join(parts)
+                    joined = "".join(parts)
                     if len(joined) >= 11:
                         break
 
-                all_digits = ''.join(parts)
+                all_digits = "".join(parts)
                 if len(all_digits) >= 11:
                     cpf = self._normalize_cpf(all_digits[:11])
                     if cpf:
@@ -229,12 +233,12 @@ class HybridExtractor(BaseExtractor):
 
     def _extract_registro_from_text(self, text: str) -> str | None:
         """Extrai número de registro (11 dígitos sem pontuação)."""
-        lines = text.split('\n')
+        lines = text.split("\n")
         for line in lines:
             # Ignora linhas com formato de CPF
-            if re.search(r'\d{3}\.\d{3}\.\d{3}-\d{2}', line):
+            if re.search(r"\d{3}\.\d{3}\.\d{3}-\d{2}", line):
                 continue
-            match = re.search(r'\b(\d{11})\b', line)
+            match = re.search(r"\b(\d{11})\b", line)
             if match:
                 return match.group(1)
         return None

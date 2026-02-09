@@ -2,15 +2,14 @@
 Configurações do doc-pipeline usando pydantic-settings.
 """
 
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
-class ExtractorBackend(str, Enum):
+class ExtractorBackend(StrEnum):
     """Backends disponíveis para extração de dados."""
 
     QWEN_VL = "qwen-vl"
@@ -89,6 +88,7 @@ class Settings(BaseSettings):
     database_url: str | None = Field(
         default=None, description="PostgreSQL URL para API keys dinâmicas"
     )
+
     @property
     def api_keys_list(self) -> list[str]:
         """Retorna lista de API keys do ambiente."""
@@ -124,9 +124,7 @@ class Settings(BaseSettings):
     # Sentry / GlitchTip settings
     sentry_dsn: str | None = Field(default=None, description="Sentry/GlitchTip DSN")
     sentry_environment: str = Field(default="production", description="Environment tag")
-    sentry_traces_sample_rate: float = Field(
-        default=0.1, description="Transaction sampling rate"
-    )
+    sentry_traces_sample_rate: float = Field(default=0.1, description="Transaction sampling rate")
 
     # Redis settings
     redis_url: str = Field(

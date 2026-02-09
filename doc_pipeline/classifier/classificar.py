@@ -8,14 +8,16 @@ Copiado de: https://github.com/org/doc-classifier
 Apenas código de inferência. Código de treino permanece no repo original.
 """
 
-import torch
-from torchvision import transforms, models
-from PIL import Image
 from pathlib import Path
+
+import torch
+from PIL import Image
+from torchvision import models, transforms
 
 # FP8 support (optional)
 try:
-    from torchao.quantization import quantize_, float8_dynamic_activation_float8_weight
+    from torchao.quantization import float8_dynamic_activation_float8_weight, quantize_
+
     TORCHAO_AVAILABLE = True
 except ImportError:
     TORCHAO_AVAILABLE = False
@@ -45,7 +47,13 @@ class ClassificadorDocumentos:
         "efficientnet_b4": 380,
     }
 
-    def __init__(self, modelo_path: str, modelo_tipo: str = "efficientnet_b0", device: str = None, fp8: bool = False):
+    def __init__(
+        self,
+        modelo_path: str,
+        modelo_tipo: str = "efficientnet_b0",
+        device: str = None,
+        fp8: bool = False,
+    ):
         """
         Args:
             modelo_path: Caminho para o arquivo .pth do modelo treinado
@@ -64,7 +72,10 @@ class ClassificadorDocumentos:
         if fp8:
             self._quantize_fp8()
 
-        print(f"Classificador carregado: {modelo_tipo} em {self.device}" + (" [FP8]" if self.fp8_enabled else ""))
+        print(
+            f"Classificador carregado: {modelo_tipo} em {self.device}"
+            + (" [FP8]" if self.fp8_enabled else "")
+        )
 
     def _load_model(self, modelo_path: str):
         """Carrega modelo treinado"""
@@ -73,7 +84,10 @@ class ClassificadorDocumentos:
         # Carrega classes do checkpoint se disponível
         if "classes" in checkpoint:
             # Map legacy "cni_" prefix to correct "cin_" prefix
-            self.classes = [c.replace("cni_", "cin_") if c.startswith("cni_") else c for c in checkpoint["classes"]]
+            self.classes = [
+                c.replace("cni_", "cin_") if c.startswith("cni_") else c
+                for c in checkpoint["classes"]
+            ]
         else:
             self.classes = self.CLASSES
 
@@ -101,15 +115,14 @@ class ClassificadorDocumentos:
 
     def _setup_transforms(self):
         """Configura transforms de inferência"""
-        self.transform = transforms.Compose([
-            transforms.Resize(int(self.input_size * 1.1)),
-            transforms.CenterCrop(self.input_size),
-            transforms.ToTensor(),
-            transforms.Normalize(
-                mean=[0.485, 0.456, 0.406],
-                std=[0.229, 0.224, 0.225]
-            ),
-        ])
+        self.transform = transforms.Compose(
+            [
+                transforms.Resize(int(self.input_size * 1.1)),
+                transforms.CenterCrop(self.input_size),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ]
+        )
 
     def _quantize_fp8(self):
         """Quantiza modelo para FP8 (Hopper/Blackwell)"""
@@ -125,7 +138,9 @@ class ClassificadorDocumentos:
         if torch.cuda.is_available():
             capability = torch.cuda.get_device_capability()
             if capability[0] < 9:
-                print(f"Aviso: GPU (sm_{capability[0]}{capability[1]}) não suporta FP8. Requer Hopper (sm_90+) ou Blackwell (sm_100+).")
+                print(
+                    f"Aviso: GPU (sm_{capability[0]}{capability[1]}) não suporta FP8. Requer Hopper (sm_90+) ou Blackwell (sm_100+)."
+                )
                 return
 
         try:
@@ -164,10 +179,7 @@ class ClassificadorDocumentos:
         confianca = conf.item()
 
         # Todas as probabilidades
-        probabilidades = {
-            self.classes[i]: probs[0, i].item()
-            for i in range(len(self.classes))
-        }
+        probabilidades = {self.classes[i]: probs[0, i].item() for i in range(len(self.classes))}
 
         return {
             "classe": classe,
