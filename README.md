@@ -5,46 +5,66 @@ Pipeline de processamento de documentos brasileiros (RG, CNH e CIN) com classifi
 ## Funcionalidades
 
 - **Classificação** de 12 tipos de documentos via EfficientNet (rg/cnh/cin x frente/verso/aberto/digital)
-- **Extração de dados** estruturados via VLM (Qwen2.5-VL), OCR+regex (EasyOCR) ou modo híbrido
+- **Extração de dados** estruturados via VLM (Qwen2.5-VL-3B), OCR+regex (EasyOCR) ou modo híbrido
 - **OCR genérico** para PDFs e imagens, com suporte a português
-- **Correção automática de orientação** via docTR (MobileNetV3)
+- **Correção automática de orientação** via EasyOCR (detecção de textbox, rotação 90°/270°)
 - **Validação de CPF** com detecção de swap RG↔CPF
-- **Autoscaling** de workers baseado na profundidade da fila
-- **Warmup API** para pré-escalar workers antes de carga esperada
-- **Batched inference** via servidor centralizado para alto throughput
+- **Batched inference** via servidor centralizado com vLLM (continuous batching) para alto throughput
+- **Workers stateless** sem GPU — escaláveis horizontalmente em nós CPU-only
 
 ## Arquitetura
 
 ```
-                              ┌──────────────────────────────────────────────┐
-                              │           INFERENCE SERVER (GPU)             │
-                              │         inference_server.py :9020            │
-                              │  Qwen2.5-VL-7B — batched forward pass       │
-                              └──────────────▲──────────────┬───────────────┘
-                                             │ request      │ reply
-                                             │ (Redis)      │ (Redis)
-┌────────┐    ┌──────────────┐    ┌──────────┴──────────────▼──────────────┐
-│ Client │───►│  API :9000   │───►│         WORKER DocID × N               │
-│        │    │  (sem GPU)   │    │  EfficientNet (classify)               │
-│        │    │              │    │  docTR (orientação)                    │
-│        │    │  Redis queue  │    │  EasyOCR (OCR/hybrid)                 │
-└────────┘    └──────┬───────┘    └────────────────────────────────────────┘
-                     │
-                     │            ┌────────────────────────────────────────┐
-                     └───────────►│         WORKER OCR                     │
-                                  │  EasyOCR + docTR :9011                 │
-                                  │  PDF multi-página (150 DPI)            │
-                                  └────────────────────────────────────────┘
+                              ┌──────────────────────────────────────────────────┐
+                              │                   GPU Node                       │
+                              │                                                  │
+                              │  inference_server.py (port 9020, GPU ~3-4GB)     │
+                              │    ├── EfficientNet classifier (~200MB)           │
+                              │    ├── EasyOCR engine (~2-4GB)                    │
+                              │    ├── OrientationCorrector (shares EasyOCR)      │
+                              │    ├── PDFConverter (CPU)                          │
+                              │    └── VLLMClient (HTTP) ──► vLLM (port 8000)     │
+                              │                               GPU ~8-10GB         │
+                              │                               Qwen2.5-VL-3B       │
+                              │                               continuous batching  │
+                              └──────────────────────────────────────────────────┘
+                                            ▲                    │
+                                  request   │                    │  reply
+                                  (Redis)   │                    │  (Redis)
+┌────────┐    ┌──────────────┐              │                    │
+│ Client │───►│  API :9000   │──► Redis ────┘                    │
+│        │    │  (sem GPU)   │    queue               ┌──────────▼───────────┐
+└────────┘    └──────────────┘                        │                      │
+                                           ┌──────────┴──────────────────┐   │
+                                           │  worker_docid × N (sem GPU) │◄──┘
+                                           │  worker_ocr (sem GPU)       │
+                                           └─────────────────────────────┘
 ```
 
-**Fluxo principal (POST /process)**:
-1. **API** recebe imagem, salva em disco temporário, enfileira job no Redis
-2. **Worker** consome job, corrige orientação (docTR), classifica (EfficientNet)
-3. **Worker** envia imagem + prompt ao **Inference Server** via Redis
-4. **Inference Server** agrupa requests em batches, processa no VLM, devolve resultado
-5. **Worker** valida dados (CPF), entrega resultado ao cliente (sync ou webhook)
+### Fluxo Principal (POST /process)
+
+1. **Client** envia imagem/PDF para `api.py` via REST
+2. **API** salva arquivo em volume compartilhado (`/tmp/doc-pipeline/`), enfileira job no Redis (`queue:doc:documents`)
+3. **Worker DocID** consome job (BRPOP), envia request de inferência para `queue:doc:inference` via Redis LPUSH
+4. **Inference Server** processa a request:
+   - Carrega imagem do volume compartilhado
+   - Corrige orientação (EasyOCR: detecção de textbox, rotação 90°/270°)
+   - Classifica tipo do documento (EfficientNet, ~100ms)
+   - Envia imagem + prompt ao **vLLM** via HTTP (`/v1/chat/completions`, API compatível com OpenAI)
+   - **vLLM** processa com continuous batching + PagedAttention (tokens intercalados entre requests)
+   - Parseia JSON do VLM, valida CPF (modo hybrid: cross-valida com EasyOCR)
+   - Publica resultado na key Redis `inference:result:{id}`
+5. **Worker** consulta a reply key, monta resposta final, publica no job result
+6. **API** retorna resultado ao client (modo sync) ou POSTa no webhook (modo async)
 
 > Para o fluxo detalhado de cada etapa, veja [docs/API_FLOW.md](docs/API_FLOW.md).
+
+### Decisões de Design
+
+- **Workers stateless e sem GPU**: todo processamento GPU é centralizado no inference server + vLLM. Workers escalam horizontalmente em nós CPU-only.
+- **File passing via volume compartilhado**: imagens são escritas em `/tmp/doc-pipeline/` (volume Docker `temp-images`) e referenciadas por path via Redis, evitando payloads grandes na fila.
+- **Redis como message bus**: toda comunicação inter-serviço vai pelo Redis (filas + reply keys). Não há HTTP direto entre workers e inference server.
+- **Backend VLM swappable**: `DOC_PIPELINE_VLLM_ENABLED=true` usa vLLM (produção); `false` usa HuggingFace transformers local (dev/fallback).
 
 ## Quick Start
 
@@ -53,24 +73,31 @@ Pipeline de processamento de documentos brasileiros (RG, CNH e CIN) com classifi
 ```bash
 # Configurar variáveis
 cp .env.example .env
-# Editar .env: adicionar HF_TOKEN (obrigatório)
+# Editar .env: adicionar HF_TOKEN (obrigatório para download dos modelos)
 
-# Subir stack completo (Redis + API + Worker + Inference Server)
+# Stack completo COM vLLM (produção — continuous batching)
+docker compose --profile vllm up -d
+
+# Stack sem vLLM (dev — HuggingFace transformers local)
 docker compose up -d
 
 # Ver logs
 docker compose logs -f
+
+# Rebuild após mudanças no código
+docker compose build && docker compose --profile vllm up -d
 
 # Parar
 docker compose down
 ```
 
 Serviços disponíveis:
-- **API**: http://localhost:9000
-- **Worker DocID**: Classificação e extração de RG/CNH/CIN
-- **Worker OCR**: OCR genérico de PDFs/imagens
-- **Inference Server**: VLM centralizado com batching
-- **Autoscaler**: Escala workers automaticamente
+- **API**: http://localhost:9000 — REST API (FastAPI, sem GPU)
+- **vLLM**: http://localhost:8000 — VLM server com continuous batching (GPU, profile `vllm`)
+- **Inference Server**: http://localhost:9020 — EfficientNet + EasyOCR + proxy VLM (GPU)
+- **Workers DocID 1-5**: Consumidores de fila stateless (sem GPU)
+- **Worker OCR**: OCR genérico stateless (sem GPU)
+- **Redis**: Message broker + result store
 
 ### Local (Desenvolvimento)
 
@@ -105,9 +132,6 @@ python cli.py documento.jpg --no-extraction
 
 # Processar pasta com saída JSON
 python cli.py ./documentos/ --json -o resultados.json
-
-# Multi-GPU
-python cli.py documento.jpg --classifier-device cuda:0 --extractor-device cuda:1
 ```
 
 ### API
@@ -191,13 +215,13 @@ if result.data:
   "extraction": {
     "document_type": "rg_aberto",
     "data": {
-      "nome": "JOÃO DA SILVA",
+      "nome": "JOAO DA SILVA",
       "cpf": "123.456.789-00",
       "rg": "12.345.678-9",
       "data_nascimento": "15/03/1985",
-      "nome_pai": "JOSÉ DA SILVA",
+      "nome_pai": "JOSE DA SILVA",
       "nome_mae": "MARIA DA SILVA",
-      "naturalidade": "SÃO PAULO-SP",
+      "naturalidade": "SAO PAULO-SP",
       "data_expedicao": "10/05/2020",
       "orgao_expedidor": "SSP-SP"
     },
@@ -206,7 +230,7 @@ if result.data:
   "image_correction": {
     "was_corrected": true,
     "rotation_applied": 90,
-    "correction_method": "doctr_classification",
+    "correction_method": "easyocr_textbox",
     "confidence": 0.98
   },
   "success": true,
@@ -218,8 +242,8 @@ if result.data:
 
 | Backend | Estratégia | Velocidade | Precisão |
 |---------|-----------|:----------:|:--------:|
-| **hybrid** (default) | VLM extrai dados + EasyOCR valida CPF com algoritmo | ~15s | Melhor (CPF) |
-| **vlm** | Qwen2.5-VL extrai tudo via prompt→JSON | ~5s | Boa |
+| **hybrid** (default) | VLM extrai dados + EasyOCR valida CPF com algoritmo | ~5s | Melhor (CPF) |
+| **vlm** | Qwen2.5-VL extrai tudo via prompt -> JSON | ~2.5s | Boa |
 | **ocr** | EasyOCR + parsing com regex | ~2s | Menor |
 
 O backend **hybrid** é o padrão em produção:
@@ -248,38 +272,53 @@ O backend **hybrid** é o padrão em produção:
 
 ## Preprocessamento
 
-### Correção de Orientação (docTR)
+### Correção de Orientação (EasyOCR)
 
 Antes de classificar e extrair, o pipeline corrige automaticamente a orientação da imagem:
 
 1. **EXIF metadata** — Corrige rotação salva pela câmera
-2. **docTR classification** — MobileNetV3 classifica orientação em 4 ângulos (0°, 90°, 180°, 270°)
-3. Aplica rotação se confiança acima do threshold (default: 0.5)
+2. **EasyOCR textbox detection** — Detecta caixas de texto e infere orientação predominante (horizontal vs vertical). Se a maioria dos textboxes são mais altos que largos, a imagem está rotacionada 90° ou 270°.
+3. Aplica rotação se necessário
 
 Isso resolve documentos fotografados de lado ou de cabeça para baixo.
 
 ## Infraestrutura
+
+### Containers Docker
+
+| Container | Imagem Base | GPU | Descrição |
+|-----------|------------|:---:|-----------|
+| **redis** | redis:7-alpine | Não | Message broker + result store (AOF) |
+| **api** | Dockerfile.api | Não | FastAPI REST API, rate limiting, enfileiramento |
+| **vllm** | vllm/vllm-openai:latest | Sim (~8-10GB) | vLLM server, continuous batching, PagedAttention |
+| **inference-server** | Dockerfile.inference-server | Sim (~3-4GB) | EfficientNet + EasyOCR + proxy VLM |
+| **worker-docid-1..5** | Dockerfile.worker (python:3.11-slim) | Não | Consumidores de fila stateless |
+| **worker-ocr** | Dockerfile.worker (python:3.11-slim) | Não | Consumidor OCR stateless |
 
 ### Portas
 
 | Serviço | Porta | Descrição |
 |---------|-------|-----------|
 | API | 9000 | REST API (FastAPI) |
+| vLLM | 8000 | VLM server (OpenAI-compatible API) |
 | Workers DocID 1-5 | 9010, 9012, 9014, 9016, 9018 | Health + métricas |
-| Workers DocID 6-8 | 9022, 9024, 9026 | Scale-profile workers |
 | Worker OCR | 9011 | Health + métricas |
-| Inference Server | 9020 | VLM centralizado |
+| Inference Server | 9020 | Saúde + métricas do servidor centralizado |
 
-### Inference Server (Batching)
+### Inference Server (Batching + vLLM)
 
-O inference server centraliza o VLM (Qwen2.5-VL) e processa requests em lotes:
+O inference server centraliza todos os modelos GPU e processa requests dos workers:
 
 ```
-Workers enviam requests → Redis queue → Inference Server agrupa em batch
-                                                    ↓
-                                        Forward pass único no GPU
-                                                    ↓
-                                        Replies via Redis keys → Workers
+Workers enviam requests → Redis queue → Inference Server:
+                                          ├── Orientação (EasyOCR textbox)
+                                          ├── Classificação (EfficientNet)
+                                          └── Extração VLM ──► vLLM (HTTP)
+                                                                  │
+                                                    Continuous batching
+                                                    + PagedAttention
+                                                                  │
+                                                          Replies ──► Redis keys ──► Workers
 ```
 
 | Config | Default | Descrição |
@@ -287,26 +326,40 @@ Workers enviam requests → Redis queue → Inference Server agrupa em batch
 | `INFERENCE_BATCH_SIZE` | 4 | Max requests por batch |
 | `INFERENCE_BATCH_TIMEOUT_MS` | 100 | Max espera para encher batch |
 | `WORKER_CONCURRENT_JOBS` | 4 | Jobs paralelos por worker |
+| `VLLM_ENABLED` | false | Usar vLLM externo (true) ou HuggingFace local (false) |
 
-Benefícios: workers ficam leves (~800MB), GPU é compartilhada eficientemente, throughput aumenta ~66% vs. sequencial.
+### Stack Tecnológico e Dependências de Infraestrutura
 
-### Autoscaler
+| Componente | Tecnologia | Função | GPU |
+|------------|-----------|--------|:---:|
+| VLM | **Qwen2.5-VL-3B-Instruct** (3B params, vision-language) | Extração de dados de documentos | Sim |
+| Servidor VLM | **vLLM** (continuous batching, PagedAttention, CUDA graphs) | Inferência VLM de alto throughput | Sim (NVIDIA, CUDA 12+) |
+| Classificador | **EfficientNet-B0** (PyTorch, ~200MB) | Classificação de tipo de documento | Sim |
+| OCR | **EasyOCR** (PyTorch + CRAFT text detection) | Extração de texto, correção de orientação | Sim |
+| PDF | **PyMuPDF** (CPU) | Conversão PDF → imagem (200 DPI) | Não |
+| API | **FastAPI** + Uvicorn | REST API, rate limiting (SlowAPI) | Não |
+| Message Broker | **Redis 7** (AOF persistence) | Fila de jobs, store de resultados, mensageria | Não |
+| Runtime GPU | **NVIDIA CUDA 12.8** + PyTorch 2.7 | Aceleração GPU para todos os modelos ML | Sim |
+| Containers | **Docker** + Docker Compose (GPU via nvidia-container-toolkit) | Orquestração de serviços | Host GPU |
+| Imagens Base | `vllm/vllm-openai:latest`, `python:3.11-slim`, custom | Imagens Docker | - |
+| Monitoramento | **Prometheus** (métricas) + **Grafana** (dashboards/alertas) | Observabilidade | Não |
+| Error Tracking | **Sentry SDK** → GlitchTip | Rastreamento de exceções | Não |
+| Model Hub | **HuggingFace Hub** (download de modelos, auth via `HF_TOKEN`) | Distribuição de modelos ML | Não |
 
-Monitora profundidade da fila e escala workers automaticamente:
+### Requisitos de Hardware
 
-```
-Queue depth ≥ 5  →  Scale up (até MAX_WORKERS)
-Queue depth = 0  →  Aguarda 120s → Scale down (até MIN_WORKERS)
-```
+| Configuração | VRAM | Notas |
+|--------------|------|-------|
+| **Com vLLM** (produção) | ~12-14 GB | vLLM ~8-10GB + inference-server ~3-4GB |
+| **Sem vLLM** (dev/fallback) | ~10-12 GB | inference-server com Qwen local |
+| **Mínimo absoluto** | 12 GB | GPU NVIDIA com CUDA 12+, compute capability sm_80+ (Ampere+) |
+| **Produção recomendada** | 16+ GB | `gpu-memory-utilization=0.70-0.90` para melhor throughput |
 
-| Variável | Padrão | Descrição |
-|----------|--------|-----------|
-| `MIN_WORKERS` | 1 | Mínimo de workers ativos |
-| `MAX_WORKERS` | 3 | Máximo de workers (scaling normal) |
-| `SCALE_UP_THRESHOLD` | 5 | Queue depth para escalar |
-| `SCALE_DOWN_DELAY` | 120 | Segundos antes de desescalar |
-
-Workers 2-8 são pré-criados e ficam parados (0 recursos). O autoscaler faz start/stop para escalar rapidamente.
+Outros requisitos:
+- **Docker Engine** com `nvidia-container-toolkit` para passthrough de GPU
+- **Docker Compose v2+** (necessário para suporte a `profiles`)
+- **RAM sistema**: ~12GB (vLLM ~8GB, inference-server ~2GB, workers ~200MB cada)
+- **Armazenamento**: ~5-10GB para cache de modelos (HuggingFace + EasyOCR)
 
 ### Warmup API
 
@@ -318,12 +371,6 @@ curl -X POST http://localhost:9000/warmup \
   -H "X-Warmup-Key: $WARMUP_KEY" \
   -H "Content-Type: application/json" \
   -d '{"workers": 5, "duration_minutes": 30}'
-
-# Status
-curl http://localhost:9000/warmup/status -H "X-Warmup-Key: $WARMUP_KEY"
-
-# Cancelar
-curl -X DELETE http://localhost:9000/warmup -H "X-Warmup-Key: $WARMUP_KEY"
 ```
 
 ### Autenticação
@@ -335,7 +382,6 @@ Se `DOC_PIPELINE_API_KEY` estiver configurada, todos os endpoints (exceto `/heal
 ```bash
 ./start-server.sh                              # URL aleatória
 ./start-server.sh start meu-dominio.ngrok.io   # Domínio customizado
-./start-server.sh status
 ./stop-server.sh
 ```
 
@@ -344,22 +390,25 @@ Se `DOC_PIPELINE_API_KEY` estiver configurada, todos os endpoints (exceto `/heal
 Copie `.env.example` para `.env`:
 
 ```env
-# Hugging Face (OBRIGATÓRIO)
+# Hugging Face (OBRIGATÓRIO para download de modelos)
 HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
 
 # Classificador
 DOC_PIPELINE_CLASSIFIER_MODEL_PATH=models/classifier.pth
 DOC_PIPELINE_CLASSIFIER_MODEL_TYPE=efficientnet_b0
-DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
 
 # Extrator
 DOC_PIPELINE_EXTRACTOR_BACKEND=hybrid        # hybrid, qwen-vl, ou easy-ocr
-DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
-DOC_PIPELINE_EXTRACTOR_MODEL_QWEN=Qwen/Qwen2.5-VL-7B-Instruct
+
+# vLLM (produção)
+DOC_PIPELINE_VLLM_ENABLED=true
+DOC_PIPELINE_VLLM_BASE_URL=http://vllm:8000/v1
+DOC_PIPELINE_VLLM_MODEL=Qwen/Qwen2.5-VL-3B-Instruct
+DOC_PIPELINE_VLLM_MAX_TOKENS=1024
+DOC_PIPELINE_VLLM_TIMEOUT=60.0
 
 # Orientação
 DOC_PIPELINE_ORIENTATION_ENABLED=true
-DOC_PIPELINE_ORIENTATION_CONFIDENCE_THRESHOLD=0.5
 
 # API
 DOC_PIPELINE_API_HOST=0.0.0.0
@@ -369,8 +418,11 @@ DOC_PIPELINE_WARMUP_API_KEY=sua-warmup-key   # para /warmup
 
 # Inference Server
 DOC_PIPELINE_INFERENCE_SERVER_ENABLED=true
-DOC_PIPELINE_INFERENCE_BATCH_SIZE=8
+DOC_PIPELINE_INFERENCE_BATCH_SIZE=4
 DOC_PIPELINE_INFERENCE_TIMEOUT=120
+
+# Sentry / GlitchTip
+DOC_PIPELINE_SENTRY_DSN=                     # se vazio, Sentry desabilitado
 ```
 
 ## Monitoramento
@@ -385,13 +437,12 @@ Métricas principais:
 - `doc_pipeline_jobs_processed_total{operation, status, delivery_mode}` — Jobs processados
 - `doc_pipeline_worker_processing_seconds{operation}` — Tempo de processamento
 - `doc_pipeline_queue_depth` — Profundidade da fila
-- `doc_pipeline_autoscaler_workers_current` — Workers ativos
 - `inference_batch_size` — Tamanho dos batches no inference server
 
 ### Grafana
 
 Dashboards disponíveis:
-- **Doc Pipeline Overview** — Métricas gerais, autoscaler, fila
+- **Doc Pipeline Overview** — Métricas gerais, fila
 - **Worker DocID** — Processing time, confidence, document types
 - **Worker OCR** — Processing time, delivery, errors
 
@@ -411,15 +462,6 @@ ruff check .
 ruff format .
 pre-commit run --all-files
 ```
-
-## Requisitos de Hardware
-
-| Configuração | VRAM |
-|--------------|------|
-| Inference Server (Qwen2.5-VL-7B) | ~14GB |
-| Worker DocID (EfficientNet + docTR + EasyOCR) | ~800MB |
-| Worker OCR (EasyOCR + docTR) | ~2GB |
-| Stack completo (1 worker + inference) | ~16GB |
 
 ## Licença
 
