@@ -23,6 +23,7 @@ python-multipart>=0.0.9
 # Observability
 structlog>=24.0.0
 prometheus-client>=0.20.0
+sentry-sdk[fastapi]>=2.0.0
 
 # Database (auth)
 asyncpg>=0.29.0

@@ -56,6 +56,17 @@ setup_logging(
 
 logger = get_logger("api")
 
+# Sentry / GlitchTip
+if settings.sentry_dsn:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        server_name="doc-pipeline-api",
+    )
+
 # Global queue service
 queue_service: QueueService | None = None
 

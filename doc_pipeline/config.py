@@ -125,6 +125,13 @@ class Settings(BaseSettings):
         description="Logs em formato JSON (True) ou colorido (False)",
     )
 
+    # Sentry / GlitchTip settings
+    sentry_dsn: str | None = Field(default=None, description="Sentry/GlitchTip DSN")
+    sentry_environment: str = Field(default="production", description="Environment tag")
+    sentry_traces_sample_rate: float = Field(
+        default=0.1, description="Transaction sampling rate"
+    )
+
     # Redis settings
     redis_url: str = Field(
         default="redis://localhost:6379/0",

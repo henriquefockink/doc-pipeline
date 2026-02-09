@@ -46,6 +46,17 @@ setup_logging(
 
 logger = get_logger("inference_server")
 
+# Sentry / GlitchTip
+if settings.sentry_dsn:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        server_name="inference-server",
+    )
+
 
 # Prometheus metrics for inference server
 inference_metrics_requests_total = Counter(

@@ -31,6 +31,17 @@ setup_logging(json_format=settings.log_json, log_level=settings.log_level)
 logger = get_logger("worker-ocr")
 metrics = get_metrics()
 
+# Sentry / GlitchTip
+if settings.sentry_dsn:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn,
+        environment=settings.sentry_environment,
+        traces_sample_rate=settings.sentry_traces_sample_rate,
+        server_name="worker-ocr",
+    )
+
 
 class OCRWorker:
     """Worker that processes OCR jobs from Redis queue."""

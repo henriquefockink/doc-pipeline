@@ -35,6 +35,8 @@ services:
       - DOC_PIPELINE_DATABASE_URL=${DOC_PIPELINE_DATABASE_URL:-}
       # Warmup endpoint API key (optional)
       - DOC_PIPELINE_WARMUP_API_KEY=${DOC_PIPELINE_WARMUP_API_KEY:-}
+      # Sentry / GlitchTip
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       # Shared temp directory for images between API and worker
       - temp-images:/tmp/doc-pipeline
@@ -72,6 +74,7 @@ services:
       - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
       - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
       - HF_TOKEN=${HF_TOKEN:-}
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
@@ -118,6 +121,7 @@ services:
       - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
       - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
       - HF_TOKEN=${HF_TOKEN:-}
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
@@ -164,6 +168,7 @@ services:
       - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
       - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
       - HF_TOKEN=${HF_TOKEN:-}
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
@@ -210,6 +215,7 @@ services:
       - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
       - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
       - HF_TOKEN=${HF_TOKEN:-}
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
@@ -256,6 +262,7 @@ services:
       - DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS=${DOC_PIPELINE_INFERENCE_TIMEOUT_SECONDS:-30}
       - DOC_PIPELINE_WORKER_CONCURRENT_JOBS=${DOC_PIPELINE_WORKER_CONCURRENT_JOBS:-4}
       - HF_TOKEN=${HF_TOKEN:-}
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
@@ -296,6 +303,7 @@ services:
       - DOC_PIPELINE_INFERENCE_BATCH_SIZE=${DOC_PIPELINE_INFERENCE_BATCH_SIZE:-4}
       - DOC_PIPELINE_INFERENCE_BATCH_TIMEOUT_MS=${DOC_PIPELINE_INFERENCE_BATCH_TIMEOUT_MS:-100}
       - HF_TOKEN=${HF_TOKEN:-}
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface
@@ -334,6 +342,7 @@ services:
       - DOC_PIPELINE_OCR_USE_GPU=true
       - DOC_PIPELINE_ORIENTATION_ENABLED=${DOC_PIPELINE_ORIENTATION_ENABLED:-true}
       - DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
+      - DOC_PIPELINE_SENTRY_DSN=${DOC_PIPELINE_SENTRY_DSN:-}
     volumes:
       # Shared temp directory for files
       - temp-images:/tmp/doc-pipeline
