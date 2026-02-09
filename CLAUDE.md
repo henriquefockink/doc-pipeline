@@ -49,7 +49,7 @@ Client → api.py (port 9000, no GPU) → Redis queue
                                          ↓
                           worker_docid.py × N (lightweight, ~800MB)
                             ├── EfficientNet classifier (local)
-                            ├── docTR orientation correction (local)
+                            ├── Orientation correction (EasyOCR textbox + docTR)
                             └── VLM extraction → inference_server.py (port 9020, GPU, ~14GB)
                                                   └── Batched Qwen2.5-VL inference
 
@@ -75,7 +75,7 @@ doc_pipeline/
 │   ├── easyocr.py           # EasyOCRExtractor (~2GB VRAM, OCR + regex)
 │   └── hybrid.py            # HybridExtractor — EasyOCR + VLM with CPF validation fallback
 ├── preprocessing/
-│   └── orientation.py       # OrientationCorrector — docTR MobileNetV3 rotation detection
+│   └── orientation.py       # OrientationCorrector — hybrid: EasyOCR textbox direction (90°/270°) + docTR (180°)
 ├── ocr/
 │   ├── engine.py            # OCREngine — EasyOCR wrapper with warmup
 │   └── converter.py         # PDFConverter — PDF to image via PyMuPDF (150 DPI)
@@ -107,9 +107,9 @@ Workers support three backends (set via `DOC_PIPELINE_EXTRACTOR_BACKEND` or per-
 
 | Endpoint | Method | Description | Worker |
 |----------|--------|-------------|--------|
-| `/classify` | POST | Classify document type (RG/CNH/CIN) | docid |
-| `/extract` | POST | Extract structured data | docid |
-| `/process` | POST | Classify + extract (full pipeline) | docid |
+| `/classify` | POST | Classify document type (image or PDF) | docid |
+| `/extract` | POST | Extract structured data (image or PDF) | docid |
+| `/process` | POST | Classify + extract full pipeline (image or PDF) | docid |
 | `/ocr` | POST | Generic OCR for PDF/image | ocr |
 | `/warmup` | POST | Pre-scale workers (requires `WARMUP_API_KEY`) | - |
 | `/jobs/{id}/status` | GET | Poll job status (sync mode) | - |

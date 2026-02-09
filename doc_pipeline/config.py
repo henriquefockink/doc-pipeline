@@ -71,7 +71,7 @@ class Settings(BaseSettings):
         description="Device for orientation model (default: uses classifier_device)",
     )
     orientation_confidence_threshold: float = Field(
-        default=0.5,
+        default=0.3,
         ge=0.0,
         le=1.0,
         description="Minimum confidence to apply orientation correction",

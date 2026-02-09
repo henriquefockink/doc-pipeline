@@ -113,9 +113,13 @@ class DocumentWorker:
         logger.info("metrics_pusher_started", worker_id=self._worker_id)
 
         # Initialize pipeline with shared OCR engine
+        shared_ocr = self._get_shared_ocr_engine()
         self.pipeline = DocumentPipeline(
-            ocr_engine=self._get_shared_ocr_engine(),
+            ocr_engine=shared_ocr,
         )
+
+        # Pass OCR engine to orientation corrector for text-box direction detection
+        self.orientation_corrector.set_ocr_engine(shared_ocr)
 
         # Warmup models if configured
         if settings.warmup_on_start:
