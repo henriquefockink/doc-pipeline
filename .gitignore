@@ -39,6 +39,10 @@ htmlcov/
 # Ruff
 .ruff_cache/
 
+# Test files
+test_files/
+scripts/sim.jpg
+
 # Runtime files
 logs/
 pids/
