@@ -4,461 +4,252 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-doc-pipeline é um pipeline de processamento de documentos brasileiros (RG e CNH) com duas funcionalidades principais:
+doc-pipeline is a document processing pipeline for Brazilian identity documents (RG, CNH, CIN) with two main functions:
 
-1. **Classificação + Extração** (Worker DocID)
-   - Classifica tipo do documento usando EfficientNet (8 classes)
-   - Extrai dados estruturados usando VLM (Qwen2.5-VL) ou OCR+regex (EasyOCR)
-   - Use case: Processar documentos de identidade para obter dados como nome, CPF, data de nascimento
-
-2. **OCR Genérico** (Worker OCR)
-   - Extrai texto de qualquer PDF ou imagem usando EasyOCR
-   - Suporte a português com diacríticos (ç, ã, á, etc.)
-   - Use case: Extrair texto de contratos, faturas, documentos diversos
+1. **Classification + Extraction** (Worker DocID) — Classifies document type via EfficientNet (8 classes), extracts structured data via VLM (Qwen2.5-VL) or OCR+regex (EasyOCR)
+2. **Generic OCR** (Worker OCR) — Extracts text from any PDF or image using EasyOCR with Portuguese support
 
 ## Commands
 
 ```bash
-# Install dependencies
+# Install dependencies (requires editable doc-classifier from sibling dir)
 pip install -r requirements.txt
 
-# Install dev dependencies (includes pre-commit and ruff)
+# Install dev dependencies (pre-commit, ruff, pytest)
 pip install -e ".[dev]"
-
-# Setup pre-commit hooks
 pre-commit install
 
-# Run CLI - full pipeline
-python cli.py documento.jpg -m models/classifier.pth
+# Run CLI
+python cli.py documento.jpg -m models/classifier.pth                    # full pipeline
+python cli.py documento.jpg -m models/classifier.pth --no-extraction    # classify only
+python cli.py documento.jpg -m models/classifier.pth --backend easy-ocr # low VRAM
 
-# Run CLI - classification only
-python cli.py documento.jpg -m models/classifier.pth --no-extraction
-
-# Run CLI - with EasyOCR backend (lower VRAM)
-python cli.py documento.jpg -m models/classifier.pth --backend easy-ocr
-
-# Run API server (uses models/classifier.pth by default)
+# Run API server locally
 python api.py
 
-# Run API server with ngrok (persists after SSH disconnect)
-./start-server.sh                              # Start with random ngrok URL
-./start-server.sh start meu-dominio.ngrok.io   # Start with custom domain (paid ngrok)
-./start-server.sh status                       # Check status
-./stop-server.sh                               # Stop all services
+# Run with ngrok (persists after SSH disconnect)
+./start-server.sh                              # random ngrok URL
+./start-server.sh start meu-dominio.ngrok.io   # custom domain
+./start-server.sh status
+./stop-server.sh
+
+# Linting (ruff not installed system-wide; pip install ruff first)
+ruff check . && ruff format --check .
+pre-commit run --all-files
+
+# Tests
+pytest                      # run all tests
+pytest tests/test_foo.py -k "test_name"  # single test
 ```
 
 ## Architecture
 
 ```
-doc_pipeline/
-├── pipeline.py         # DocumentPipeline - main orchestrator, lazy-loads models
-├── config.py           # Pydantic Settings with DOC_PIPELINE_ env prefix
-├── schemas.py          # DocumentType enum, RGData, CNHData, result models
-├── classifier/
-│   └── adapter.py      # Wraps external doc-classifier package
-├── extractors/
-│   ├── base.py         # BaseExtractor abstract class
-│   ├── qwen_vl.py      # QwenVLExtractor (~16GB VRAM)
-│   └── easyocr.py      # EasyOCRExtractor (~2GB VRAM)
-└── prompts/
-    ├── rg.py           # RG extraction prompt template
-    └── cnh.py          # CNH extraction prompt template
+Client → api.py (port 9000, no GPU) → Redis queue
+                                         ↓
+                          worker_docid.py × N (lightweight, ~800MB)
+                            ├── EfficientNet classifier (local)
+                            ├── docTR orientation correction (local)
+                            └── VLM extraction → inference_server.py (port 9020, GPU, ~14GB)
+                                                  └── Batched Qwen2.5-VL inference
+
+Client → api.py → Redis queue → worker_ocr.py (port 9011, ~2GB VRAM)
+                                  └── EasyOCR + docTR orientation
 ```
 
-**Entry points**: `cli.py` (command-line), `api.py` (FastAPI REST server), `worker_docid.py` (classification worker), `worker_ocr.py` (OCR worker)
+**Key insight**: Workers are lightweight — they do classification and preprocessing locally, then delegate VLM inference to a centralized `inference_server.py` that batches requests for higher GPU throughput. Workers communicate with the inference server via Redis (LPUSH request → poll reply key).
+
+**Entry points**: `cli.py`, `api.py`, `worker_docid.py`, `worker_ocr.py`, `inference_server.py`
+
+### Core Modules
+
+```
+doc_pipeline/
+├── pipeline.py              # DocumentPipeline orchestrator (lazy-loads models via @property)
+├── config.py                # Pydantic Settings, DOC_PIPELINE_ env prefix, get_settings() singleton
+├── schemas.py               # DocumentType enum, RGData/CNHData/CINData, result models
+├── classifier/adapter.py    # Wraps external doc-classifier package (EfficientNet)
+├── extractors/
+│   ├── base.py              # BaseExtractor ABC — extend with extract_rg/extract_cnh/extract_cin
+│   ├── qwen_vl.py           # QwenVLExtractor (~16GB VRAM, uses inference server in production)
+│   ├── easyocr.py           # EasyOCRExtractor (~2GB VRAM, OCR + regex)
+│   └── hybrid.py            # HybridExtractor — EasyOCR + VLM with CPF validation fallback
+├── preprocessing/
+│   └── orientation.py       # OrientationCorrector — docTR MobileNetV3 rotation detection
+├── ocr/
+│   ├── engine.py            # OCREngine — EasyOCR wrapper with warmup
+│   └── converter.py         # PDFConverter — PDF to image via PyMuPDF (150 DPI)
+├── shared/
+│   ├── job_context.py       # JobContext dataclass — serializable job state through Redis
+│   ├── queue.py             # QueueService — Redis LPUSH/BRPOP operations
+│   ├── delivery.py          # DeliveryService — sync (Redis polling) or webhook delivery
+│   ├── inference_client.py  # InferenceClient — sends VLM requests to inference server via Redis
+│   └── constants.py         # Queue names, TTLs, key generators
+├── observability/
+│   ├── metrics.py           # Prometheus metrics with middleware
+│   └── worker_metrics.py    # Workers push metrics to Redis, API aggregates at /metrics
+├── prompts/                 # VLM prompt templates for RG, CNH, CIN extraction
+├── utils/cpf.py             # CPF validation, normalization, RG/CPF swap detection
+└── auth.py                  # Optional API key auth (env keys or database)
+```
+
+### Extraction Backends
+
+Workers support three backends (set via `DOC_PIPELINE_EXTRACTOR_BACKEND` or per-job):
+
+| Backend | How it works | Speed | Accuracy |
+|---------|-------------|-------|----------|
+| `hybrid` (default) | EasyOCR for digits + VLM for structure, CPF cross-validation | ~15s | Best (CPF) |
+| `vlm` | Qwen2.5-VL only | ~5s | Good |
+| `ocr` | EasyOCR + regex only | ~2s | Lower |
 
 ## API Endpoints
 
 | Endpoint | Method | Description | Worker |
 |----------|--------|-------------|--------|
-| `/classify` | POST | Classifica tipo do documento (RG/CNH) | worker |
-| `/extract` | POST | Extrai dados estruturados | worker |
-| `/process` | POST | Classifica + extrai (pipeline completo) | worker |
-| `/ocr` | POST | OCR genérico de PDF/imagem | worker-ocr |
-| `/health` | GET | Health check da API | - |
-| `/metrics` | GET | Métricas Prometheus | - |
+| `/classify` | POST | Classify document type (RG/CNH/CIN) | docid |
+| `/extract` | POST | Extract structured data | docid |
+| `/process` | POST | Classify + extract (full pipeline) | docid |
+| `/ocr` | POST | Generic OCR for PDF/image | ocr |
+| `/warmup` | POST | Pre-scale workers (requires `WARMUP_API_KEY`) | - |
+| `/jobs/{id}/status` | GET | Poll job status (sync mode) | - |
+| `/health` | GET | Health check | - |
+| `/metrics` | GET | Aggregated Prometheus metrics | - |
+
+**Delivery modes**: `sync` (default, polls Redis up to 5min), `webhook` (returns 202, POSTs result)
 
 ## Port Allocation
-
-doc-pipeline uses the **9000 port range** to avoid conflicts with other services:
 
 | Service | Port | Description |
 |---------|------|-------------|
 | API | 9000 | REST API (FastAPI) |
-| Worker Health | 9010 | Classification worker health |
-| Worker OCR Health | 9011 | OCR worker health |
-| Redis | 6379 | Queue backend (internal) |
+| DocID workers 1-5 | 9010, 9012, 9014, 9016, 9018 | Worker health/metrics |
+| DocID workers 6-8 | 9022, 9024, 9026 | Scale-profile workers |
+| OCR worker | 9011 | OCR worker health/metrics |
+| Inference server | 9020 | Centralized VLM batching |
 
 ## Docker Deployment
 
 ```bash
-# Start core services (Redis + API + Worker 1 + Inference Server)
+# Core services (Redis + API + Worker 1 + Inference Server)
 docker compose up -d
 
-# Start ALL workers (including scale-profile workers 2-8)
+# ALL workers including scale-profile workers 6-8
 docker compose --profile scale up -d
 
-# View logs
-docker compose logs -f
-
-# Stop services
-docker compose down
-```
-
-**IMPORTANT**: Workers 2-8 use `profiles: [scale]`. You MUST use `--profile scale` to manage them:
-```bash
-# Start a specific scale worker
+# Specific scale worker
 docker compose --profile scale up -d worker-docid-6
 
-# List all workers (including scale profile)
-docker compose --profile scale ps
+# Rebuild after code changes
+docker compose build && docker compose up -d
 
-# Rebuild scale workers
-docker compose --profile scale build worker-docid-6 worker-docid-7 worker-docid-8
-```
-
-The **autoscaler** handles this automatically via `docker compose --profile scale` in its commands. Use the `/warmup` API endpoint to pre-scale workers before expected load.
-
-Services:
-- **redis**: Queue backend (filas separadas por worker)
-- **api**: Stateless API que enfileira jobs (sem GPU)
-- **inference-server**: Centralized Qwen VLM for batched inference (GPU, ~14GB VRAM)
-- **worker-docid-1**: Worker de classificação/extração — always active (lightweight, ~800MB)
-- **worker-docid-2 to 8**: Scale workers — managed by autoscaler (profiles: scale)
-- **worker-ocr**: Worker de OCR genérico
-- **autoscaler**: Monitors queue depth, scales workers 1-8 up/down
-
-## Workers
-
-O sistema usa workers separados para diferentes tipos de processamento:
-
-### Worker DocID (`worker_docid.py`)
-
-Processa documentos de identidade (RG e CNH).
-
-| Característica | Valor |
-|----------------|-------|
-| Fila Redis | `queue:doc:documents` |
-| Porta métricas | 9010 |
-| Job Prometheus | `doc-pipeline-worker-docid` |
-| Modelos | EfficientNet (classifier) + Qwen2.5-VL (extractor) |
-| VRAM | ~16GB |
-| Tempo/job | ~3s |
-
-**Operações:**
-- `classify` - Classifica tipo do documento (8 classes: rg_frente, rg_verso, cnh_frente, etc.)
-- `extract` - Extrai dados estruturados (nome, CPF, data nascimento, etc.)
-- `process` - Classifica + extrai em uma única chamada
-
-**Exemplo de uso:**
-```bash
-curl -X POST http://localhost:9000/process \
-  -F "arquivo=@documento.jpg" \
-  -H "X-API-Key: $API_KEY"
-```
-
-### Worker OCR (`worker_ocr.py`)
-
-OCR genérico para qualquer PDF ou imagem.
-
-| Característica | Valor |
-|----------------|-------|
-| Fila Redis | `queue:doc:ocr` |
-| Porta métricas | 9011 |
-| Job Prometheus | `doc-pipeline-worker-ocr` |
-| Modelo | EasyOCR (português) |
-| VRAM | ~2GB |
-| Tempo/job | ~40ms (imagem simples), ~4s/página (PDF) |
-
-**Características:**
-- Suporte a PDF multi-página (converte para imagem a 150 DPI)
-- Bom reconhecimento de português (diacríticos: ç, ã, á, etc.)
-- GPU opcional (mais rápido com CUDA)
-
-**Exemplo de uso:**
-```bash
-curl -X POST http://localhost:9000/ocr \
-  -F "arquivo=@contrato.pdf" \
-  -F "max_pages=5" \
-  -H "X-API-Key: $API_KEY"
-```
-
-### Métricas dos Workers
-
-Todos os workers expõem métricas Prometheus em `/metrics`:
-
-| Worker | Porta |
-|--------|-------|
-| DocID 1 | 9010 |
-| DocID 2 | 9012 |
-| DocID 3 | 9014 |
-| DocID 4 | 9016 |
-| DocID 5 | 9018 |
-| OCR | 9011 |
-
-**Métricas principais:**
-- `doc_pipeline_jobs_processed_total{operation, status, delivery_mode}` - Jobs processados
-- `doc_pipeline_worker_processing_seconds{operation}` - Tempo de processamento
-- `doc_pipeline_queue_depth` - Profundidade da fila
-- `doc_pipeline_queue_wait_seconds` - Tempo de espera na fila
-
-## GPU Sharing (MPS)
-
-This server runs multiple GPU services (doc-pipeline, ASR, TTS, etc.) on the same NVIDIA H200. To avoid GPU contention and ensure fair time-slicing, we use **NVIDIA MPS (Multi-Process Service)**.
-
-### Why MPS?
-
-| Mode | VRAM Access | Concurrency | Use Case |
-|------|-------------|-------------|----------|
-| Default | Shared | Serialized (unfair) | Single service |
-| **MPS** | **Shared (full)** | **Fair time-slicing** | **Multiple services** |
-| MIG | Partitioned (fixed) | Parallel (isolated) | Fixed workloads <40GB |
-
-MPS was chosen because:
-- Models can use **full VRAM** (some need >40GB, ruling out MIG)
-- **Fair scheduling** between services (ASR won't stall while OCR processes)
-- Works with **any CUDA application** without code changes
-
-### MPS Service
-
-MPS is configured as a systemd service that starts on boot:
-
-```bash
-# Check MPS status
-systemctl status nvidia-mps
-
-# Verify processes are using MPS (look for M+C type)
-nvidia-smi
-# Type "M+C" = MPS + Compute (correct)
-# Type "C" = Compute only (MPS not active)
-
-# Restart MPS (requires stopping all GPU processes first)
-sudo systemctl restart nvidia-mps
-```
-
-Service file: `/etc/systemd/system/nvidia-mps.service`
-
-### Scaling Workers
-
-With MPS, you can safely scale doc-pipeline workers:
-
-```bash
-# Scale to 2 workers (recommended for high load)
-docker compose up -d --scale worker=2
-
-# Check GPU memory before scaling more
-nvidia-smi --query-gpu=memory.used,memory.total --format=csv
-```
-
-Each worker uses ~17GB VRAM. The H200 (143GB) can handle multiple workers plus ASR services.
-
-## Key Patterns
-
-- **Lazy loading**: DocumentPipeline loads classifier/extractor only when first used (via `@property`)
-- **Abstract base**: New extractors extend `BaseExtractor` with `extract()` method
-- **Pydantic validation**: All data models use Pydantic; config uses pydantic-settings
-- **External dependency**: Requires `doc-classifier` package installed as editable (`-e ../doc-classifier`)
-
-## Configuration
-
-Default model path: `models/classifier.pth`
-
-Key settings (all prefixed with `DOC_PIPELINE_`):
-- `CLASSIFIER_MODEL_TYPE`: efficientnet_b0, efficientnet_b2, efficientnet_b4
-- `EXTRACTOR_BACKEND`: qwen-vl (default) or easy-ocr
-- `CLASSIFIER_DEVICE` / `EXTRACTOR_DEVICE`: cuda:N or cpu (supports multi-GPU)
-- `API_KEY`: Optional API key for authentication (if set, requires `X-API-Key` header)
-
-## Document Types
-
-8 classes: `rg_frente`, `rg_verso`, `rg_aberto`, `rg_digital`, `cnh_frente`, `cnh_verso`, `cnh_aberta`, `cnh_digital`
-
-Extraction yields `RGData` or `CNHData` based on document type (defined in `schemas.py`).
-
-## Monitoring (Grafana + Prometheus)
-
-O monitoramento usa Grafana e Prometheus **externos** (não locais):
-
-- **Grafana**: https://speech-analytics-grafana-dev.paneas.com
-- **Credenciais**: Configuradas em `.env` (`GRAFANA_URL`, `GRAFANA_TOKEN`)
-
-O Prometheus de produção roda fora desta máquina e scrapea as métricas via rede:
-- API: porta 9000
-- Workers DocID: portas 9010, 9012, 9014, 9016, 9018
-- Worker OCR: porta 9011
-
-As métricas do autoscaler são expostas via `/metrics` da API.
-
-### Autoscaler (Container)
-
-O autoscaler roda como **container Docker** junto com o stack:
-
-```bash
-# Status
-docker compose ps autoscaler
-
-# Logs
-docker compose logs -f autoscaler
-
-# Reiniciar (após alterar scripts/autoscale.sh)
+# After changing autoscaler script
 docker compose build autoscaler && docker compose up -d autoscaler
 ```
 
-**Configuração** (via environment no `docker-compose.yml`):
-- `MIN_WORKERS=1`: mínimo de workers
-- `MAX_WORKERS=3`: limite normal de scaling
-- `SCALE_UP_THRESHOLD=5`: queue depth para escalar
-- `SCALE_DOWN_DELAY=120`: segundos antes de desescalar
-- Warmup pode solicitar até 5 workers via API `/warmup`
+**IMPORTANT**: Workers 6-8 use `profiles: [scale]` — you MUST pass `--profile scale` to manage them.
 
-**Workers disponíveis** (definidos em `scripts/autoscale.sh`):
-- `worker-docid-1` a `worker-docid-5`
+Services: **redis** (queue), **api** (stateless, no GPU), **inference-server** (batched VLM, GPU ~14GB), **worker-docid-1** (always on, ~800MB), **worker-docid-2 to 8** (managed by autoscaler), **worker-ocr**, **autoscaler** (monitors queue, scales workers)
 
-### Estrutura de Pastas no Grafana
+### Inference Server
+
+The inference server (`inference_server.py`) collects VLM requests into batches for higher GPU throughput:
+1. Workers LPUSH requests to `queue:doc:inference`
+2. Server collects up to `INFERENCE_BATCH_SIZE` (default 4) or waits `INFERENCE_BATCH_TIMEOUT_MS` (default 100ms)
+3. Processes batch in single VLM forward pass
+4. Publishes replies to individual Redis keys (`inference:result:{id}`)
+5. Workers poll their reply key
+
+Config: `INFERENCE_BATCH_SIZE=8`, `WORKER_CONCURRENT_JOBS=4`, `INFERENCE_TIMEOUT=30s`
+
+### Autoscaler
+
+Bash script (`scripts/autoscale.sh`) running as Docker container:
+- Monitors `queue:doc:documents` depth via Redis
+- Scales workers up when queue ≥ `SCALE_UP_THRESHOLD` (default 5)
+- Scales down after queue empty for `SCALE_DOWN_DELAY` (default 120s)
+- Never stops `worker-docid-1`; manages workers 1-8
+- Respects `/warmup` API warmup requests
+- Exports metrics to `/tmp/autoscaler-metrics/` (mounted as volume)
+
+## Configuration
+
+All settings prefixed with `DOC_PIPELINE_` (see `doc_pipeline/config.py`):
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLASSIFIER_MODEL_TYPE` | efficientnet_b0 | b0, b2, or b4 |
+| `EXTRACTOR_BACKEND` | qwen-vl | qwen-vl, easy-ocr, or hybrid |
+| `CLASSIFIER_DEVICE` / `EXTRACTOR_DEVICE` | cuda:0 | cuda:N or cpu |
+| `API_KEY` | - | Optional auth (requires `X-API-Key` header) |
+| `INFERENCE_BATCH_SIZE` | 4 | Max requests per VLM batch |
+| `WORKER_CONCURRENT_JOBS` | 4 | Parallel jobs per worker |
+
+## Document Types
+
+8 classes: `rg_frente`, `rg_verso`, `rg_aberto`, `rg_digital`, `cnh_frente`, `cnh_verso`, `cnh_aberta`, `cnh_digital` (plus CIN variants)
+
+Extraction yields `RGData`, `CNHData`, or `CINData` based on document type (defined in `schemas.py`).
+
+## Key Patterns
+
+- **Lazy loading**: Models loaded on first access via `@property` (DocumentPipeline, workers)
+- **Abstract base + factory**: `BaseExtractor` ABC; pipeline creates correct extractor from backend enum
+- **Singletons**: `get_settings()`, `get_metrics()`, `get_queue_service()` return cached instances
+- **JobContext dataclass**: Lightweight `@dataclass` (not Pydantic) for serializable job state through Redis
+- **Shared OCR engine**: Single EasyOCR instance shared across extractors to avoid duplicate model loads
+- **External dependency**: Requires `doc-classifier` package installed as editable (`pip install -e ../doc-classifier`)
+
+## Monitoring (Grafana + Prometheus)
+
+External Grafana at `https://speech-analytics-grafana-dev.paneas.com` (credentials in `.env`: `GRAFANA_URL`, `GRAFANA_TOKEN`).
+
+Workers push metrics to Redis; API aggregates them at `/metrics` for Prometheus scraping.
+
+### Grafana Folder Structure
 
 ```
-📁 Doc Pipeline (uid: bfbjyfdf0uhhcf)           # Alertas gerais do pipeline
-   📁 Workers (uid: doc-pipeline-workers-nested)        # Dashboards específicos de workers
-   📁 Workers Alerts (uid: doc-pipeline-workers-alerts-nested)  # Alertas específicos de workers
+Doc Pipeline (uid: bfbjyfdf0uhhcf)
+├── Workers (uid: doc-pipeline-workers-nested)         → worker dashboards
+└── Workers Alerts (uid: doc-pipeline-workers-alerts-nested) → worker alerts
 ```
 
-Ao adicionar um novo worker, seguir este padrão:
-- Dashboard vai em `Doc Pipeline / Workers` (folderUid: `doc-pipeline-workers-nested`)
-- Alertas vão em `Doc Pipeline / Workers Alerts` (folderUid: `doc-pipeline-workers-alerts-nested`)
-
-### Estrutura de Arquivos
-
-```
-monitoring/
-├── grafana/
-│   ├── dashboards/             # JSONs de dashboards (backup/modelo)
-│   │   └── doc-pipeline.json   # Dashboard Overview
-│   └── alerts/                 # YAMLs de alertas (backup/modelo)
-│       └── doc-pipeline-alerts.yaml
-└── scripts/
-    ├── create-dashboards.sh    # Cria dashboards via API Grafana
-    └── create-alerts.sh        # Cria alertas via API Grafana
-```
-
-**Onde guardar novos arquivos:**
-- **Dashboards**: `monitoring/grafana/dashboards/`
-- **Alertas**: `monitoring/grafana/alerts/`
-
-### Criar/Atualizar Dashboards e Alertas via API
-
-**IMPORTANTE**: Sempre usar os scripts para criar dashboards e alertas no Grafana de produção!
+### Managing Dashboards and Alerts
 
 ```bash
-# Criar dashboards (usa .env para credenciais)
+# Create/update via API scripts (uses .env credentials)
 ./monitoring/scripts/create-dashboards.sh
-
-# Criar alertas (usa .env para credenciais)
 ./monitoring/scripts/create-alerts.sh
-
-# Com argumentos explícitos
-./monitoring/scripts/create-dashboards.sh https://grafana.example.com glsa_xxx
-./monitoring/scripts/create-alerts.sh https://grafana.example.com glsa_xxx
 ```
 
-Variáveis de ambiente (configuradas em `.env`):
-- `GRAFANA_URL` - URL do Grafana (produção: https://speech-analytics-grafana-dev.paneas.com)
-- `GRAFANA_TOKEN` - Token de API (glsa_xxx) ou user:password
+Files: dashboards in `monitoring/grafana/dashboards/`, alerts in `monitoring/grafana/alerts/`
 
-### Processo para Adicionar Novo Worker
+### Adding a New Worker to Monitoring
 
-1. **Criar dashboard** em `monitoring/scripts/create-dashboards.sh`:
-   - Adicionar chamada `create_dashboard "Worker X" "worker-x" "$FOLDER_WORKERS" '{...}'`
-   - Painéis padrão: Queue Depth, Jobs/s, P95 Latency, Error Rate, Jobs (24h), Worker Status
-   - Seções: Overview, Processing Metrics, Queue, Delivery
+1. Add dashboard call in `monitoring/scripts/create-dashboards.sh` (folderUid: `doc-pipeline-workers-nested`)
+2. Add alert rules in `monitoring/scripts/create-alerts.sh` (folderUid: `doc-pipeline-workers-alerts-nested`)
+3. Run both scripts against production Grafana
 
-2. **Criar alertas** em `monitoring/scripts/create-alerts.sh`:
-   - Adicionar seção "Criando alertas do X Worker..."
-   - Alertas padrão: Worker Down, High Error Rate, High Latency, Queue Backup
+## GPU Sharing (MPS)
 
-3. **Executar scripts** no Grafana de produção:
-   ```bash
-   ./monitoring/scripts/create-dashboards.sh
-   ./monitoring/scripts/create-alerts.sh
-   ```
-
-4. **Verificar** no Grafana:
-   - Dashboard: https://speech-analytics-grafana-dev.paneas.com/d/worker-x/worker-x
-   - Alertas: https://speech-analytics-grafana-dev.paneas.com/alerting/list
-
-### Dashboards Disponíveis
-
-| Dashboard | Pasta | UID | Descrição |
-|-----------|-------|-----|-----------|
-| Doc Pipeline - Overview | Doc Pipeline | doc-pipeline-overview | Overview geral, auto-scaler, métricas de negócio |
-| Worker DocID | Doc Pipeline / Workers | worker-docid | Queue, processing time, confidence, document types |
-| Worker OCR | Doc Pipeline / Workers | worker-ocr | Queue, processing time, delivery, errors |
-
-### Alertas Configurados
-
-**Doc Pipeline (alertas gerais):**
-- High Error Rate (5xx), High Latency P95/P99, High Concurrency
-- Classification Confidence, Queue Depth, Worker Errors, Webhook Failures
-
-**Doc Pipeline / Workers Alerts:**
-
-| Alerta | Worker | Condição |
-|--------|--------|----------|
-| DocID Worker Down | docid | Worker unreachable > 2min |
-| DocID High Error Rate | docid | Error rate > 10% |
-| DocID High Latency | docid | P95 > 30s |
-| DocID Queue Backup | docid | Queue > 10 jobs |
-| DocID Low Confidence | docid | Median confidence < 70% |
-| OCR Worker Down | ocr | Worker unreachable > 2min |
-| OCR High Error Rate | ocr | Error rate > 10% |
-| OCR High Latency | ocr | P95 > 30s |
-| OCR Queue Backup | ocr | Queue > 10 jobs |
+NVIDIA MPS is enabled system-wide (`systemctl status nvidia-mps`) for fair GPU time-slicing between doc-pipeline, ASR, and other services on the H200. Check parent `../CLAUDE.md` for details.
 
 ## Code Quality
 
-Pre-commit hooks ensure consistent code style:
-- **Ruff**: Linter and formatter (replaces black, isort, flake8)
-- Run `pre-commit run --all-files` to check all files manually
-- Hooks run automatically on `git commit`
+- **Ruff**: Linter + formatter (line length 100, Python 3.12 target)
+- Rules: E, F, I (isort), B (bugbear), UP (pyupgrade), SIM (simplify)
+- B008 ignored (FastAPI `Depends()` in defaults)
+- Pre-commit hooks run on `git commit`; manual: `pre-commit run --all-files`
 
 ## Git Commits
 
-**IMPORTANTE**: Ao criar commits, NÃO incluir `Co-Authored-By: Claude` ou qualquer menção ao Claude na mensagem de commit. Commits devem aparecer como se fossem feitos apenas pelo desenvolvedor.
+**IMPORTANTE**: Do NOT include `Co-Authored-By: Claude` or any mention of Claude in commit messages.
 
 ## Documentation Lookup (Context7)
 
-Always use Context7 MCP tools when searching for library documentation and best practices. This ensures you have up-to-date information beyond the knowledge cutoff.
+Use Context7 MCP tools for up-to-date library docs:
 
-### When to Use Context7
+1. `mcp__context7__resolve-library-id(libraryName="pydantic", query="...")`
+2. `mcp__context7__query-docs(libraryId="/pydantic/pydantic", query="...")`
 
-- Looking up API usage for libraries (Pydantic, FastAPI, PyTorch, Transformers, etc.)
-- Checking current best practices or migration guides
-- Finding code examples for specific functionality
-- Verifying correct syntax or parameters for library functions
-
-### How to Use
-
-1. **Resolve the library ID first**:
-   ```
-   mcp__context7__resolve-library-id(libraryName="pydantic", query="how to define model with validators")
-   ```
-
-2. **Query the documentation**:
-   ```
-   mcp__context7__query-docs(libraryId="/pydantic/pydantic", query="how to define model with validators")
-   ```
-
-### Key Libraries for This Project
-
-| Library | Typical Context7 ID |
-|---------|---------------------|
-| Pydantic | `/pydantic/pydantic` |
-| FastAPI | `/fastapi/fastapi` |
-| PyTorch | `/pytorch/pytorch` |
-| Transformers | `/huggingface/transformers` |
-| Pillow | `/python-pillow/pillow` |
-
-### Tips
-
-- Be specific in your query to get relevant results
-- Limit to 3 calls per question to avoid excessive lookups
-- If the user provides a library ID directly (e.g., `/org/project`), skip `resolve-library-id`
+Key IDs: `/pydantic/pydantic`, `/fastapi/fastapi`, `/pytorch/pytorch`, `/huggingface/transformers`, `/python-pillow/pillow`

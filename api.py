@@ -14,11 +14,12 @@ import tempfile
 import uuid
 from contextlib import asynccontextmanager
 from enum import Enum
+from pathlib import Path
 from typing import Annotated
 
 import redis.exceptions
 from fastapi import Depends, FastAPI, File, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 from slowapi import Limiter, _rate_limit_exceeded_handler
@@ -269,6 +270,13 @@ async def wait_for_result(request_id: str, timeout: float) -> dict:
         await asyncio.sleep(min(poll_interval, remaining))
 
 
+@app.get("/", response_class=HTMLResponse, include_in_schema=False)
+async def landing_page():
+    """Landing page do produto."""
+    html_path = Path(__file__).parent / "static" / "index.html"
+    return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
+
+
 @app.get("/metrics")
 async def metrics():
     """Endpoint para Prometheus scraping.
@@ -336,14 +344,14 @@ async def list_classes(auth: AuthInfo = Depends(require_api_key)):
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def classify(
     request: Request,
-    arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
+    arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
     delivery_mode: Annotated[DeliveryMode, Query(description="Modo de entrega")] = DeliveryMode.SYNC,
     webhook_url: Annotated[str | None, Query(description="URL para webhook (se modo=webhook)")] = None,
     correlation_id: Annotated[str | None, Query(description="ID de correlação")] = None,
     auth: AuthInfo = Depends(require_api_key),
 ):
     """
-    Classifica uma imagem de documento.
+    Classifica uma imagem ou PDF de documento.
 
     Retorna o tipo do documento e a confiança da classificação.
     """
@@ -361,8 +369,8 @@ async def classify(
         )
 
     try:
-        # Save image to temp file
-        image_path = await save_temp_image(arquivo)
+        # Save file to temp location (supports images and PDFs)
+        image_path = await save_temp_file(arquivo, DOCID_ALLOWED_EXTENSIONS)
 
         # Create job
         job = JobContext.create(
@@ -462,7 +470,7 @@ async def classify(
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def extract(
     request: Request,
-    arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
+    arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
     doc_type: Annotated[str, Query(description="Tipo do documento (rg_frente, cnh_frente, etc)")],
     backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
     validate_cpf: Annotated[bool, Query(description="Validar CPF extraído (dígitos verificadores)")] = True,
@@ -526,8 +534,8 @@ async def extract(
         )
 
     try:
-        # Save image to temp file
-        image_path = await save_temp_image(arquivo)
+        # Save file to temp location (supports images and PDFs)
+        image_path = await save_temp_file(arquivo, DOCID_ALLOWED_EXTENSIONS)
 
         # Create job
         job = JobContext.create(
@@ -626,7 +634,7 @@ async def extract(
 @limiter.limit(f"{settings.rate_limit_requests}/{settings.rate_limit_window}")
 async def process(
     request: Request,
-    arquivo: Annotated[UploadFile, File(description="Imagem do documento")],
+    arquivo: Annotated[UploadFile, File(description="Imagem ou PDF do documento")],
     extract: Annotated[bool, Query(description="Se deve extrair dados")] = True,
     min_confidence: Annotated[float, Query(ge=0.0, le=1.0, description="Confiança mínima")] = 0.5,
     backend: Annotated[ExtractorBackend, Query(description="Backend de extração (hybrid=default, vlm, ocr)")] = ExtractorBackend.HYBRID,
@@ -669,8 +677,8 @@ async def process(
         )
 
     try:
-        # Save image to temp file
-        image_path = await save_temp_image(arquivo)
+        # Save file to temp location (supports images and PDFs)
+        image_path = await save_temp_file(arquivo, DOCID_ALLOWED_EXTENSIONS)
 
         # Create job
         job = JobContext.create(
@@ -765,6 +773,9 @@ async def process(
         )
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# DocID allowed file extensions (images + PDF)
+DOCID_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
 
 # OCR allowed file extensions
 OCR_ALLOWED_EXTENSIONS = {".pdf", ".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".webp"}
@@ -928,168 +939,6 @@ async def get_job_status(
         "request_id": request_id,
         "status": "unknown",
         "message": "Job not found or expired",
-    }
-
-
-# ============================================================
-# Warmup endpoint - scales workers before expected load
-# ============================================================
-
-class WarmupRequest(BaseModel):
-    """Request to warmup workers."""
-    workers: int = Field(default=3, ge=1, le=8, description="Number of workers to keep running (max 8 via warmup)")
-    duration_minutes: int = Field(default=30, ge=5, le=120, description="Duration to keep workers up (5-120 min)")
-
-
-class WarmupResponse(BaseModel):
-    """Response from warmup endpoint."""
-    status: str
-    workers_requested: int
-    duration_minutes: int
-    warmup_until: str
-    message: str
-
-
-async def require_warmup_api_key(request: Request) -> None:
-    """Validate warmup-specific API key."""
-    settings = get_settings()
-
-    if not settings.warmup_api_key:
-        raise HTTPException(
-            status_code=503,
-            detail="Warmup endpoint not configured. Set DOC_PIPELINE_WARMUP_API_KEY.",
-        )
-
-    # Check header
-    api_key = request.headers.get("X-Warmup-Key") or request.headers.get("X-API-Key")
-
-    if not api_key:
-        raise HTTPException(
-            status_code=401,
-            detail="Missing X-Warmup-Key header",
-        )
-
-    if api_key != settings.warmup_api_key:
-        raise HTTPException(
-            status_code=403,
-            detail="Invalid warmup API key",
-        )
-
-
-@app.post("/warmup", response_model=WarmupResponse)
-async def warmup_workers(
-    request: Request,
-    body: WarmupRequest,
-    _: None = Depends(require_warmup_api_key),
-):
-    """
-    Pre-scale workers before expected high load.
-
-    This endpoint sets a "warmup lock" in Redis that prevents the autoscaler
-    from scaling down workers for the specified duration.
-
-    **Requires dedicated API key** (X-Warmup-Key header).
-
-    Use this when you know a large batch of documents is coming and want
-    to avoid cold-start latency.
-    """
-    if queue_service is None:
-        raise HTTPException(status_code=503, detail="Queue service not connected")
-
-    from datetime import datetime, timezone, timedelta
-
-    # Calculate warmup end time
-    warmup_until = datetime.now(timezone.utc) + timedelta(minutes=body.duration_minutes)
-    warmup_until_ts = int(warmup_until.timestamp())
-
-    # Set warmup lock in Redis
-    # Key: autoscaler:warmup - Value: {"workers": N, "until": timestamp}
-    # TTL: duration_minutes + 1 minute buffer
-    warmup_data = {
-        "workers": body.workers,
-        "until": warmup_until_ts,
-        "requested_at": int(datetime.now(timezone.utc).timestamp()),
-    }
-
-    ttl_seconds = (body.duration_minutes + 1) * 60
-
-    await queue_service._redis.set(
-        "autoscaler:warmup",
-        json.dumps(warmup_data),
-        ex=ttl_seconds,
-    )
-
-    logger.info(
-        "warmup_requested",
-        workers=body.workers,
-        duration_minutes=body.duration_minutes,
-        warmup_until=warmup_until.isoformat(),
-    )
-
-    return WarmupResponse(
-        status="warming_up",
-        workers_requested=body.workers,
-        duration_minutes=body.duration_minutes,
-        warmup_until=warmup_until.isoformat(),
-        message=f"Autoscaler will maintain {body.workers} workers for {body.duration_minutes} minutes.",
-    )
-
-
-@app.delete("/warmup")
-async def cancel_warmup(
-    request: Request,
-    _: None = Depends(require_warmup_api_key),
-):
-    """
-    Cancel warmup and allow normal autoscaling.
-
-    **Requires dedicated API key** (X-Warmup-Key header).
-    """
-    if queue_service is None:
-        raise HTTPException(status_code=503, detail="Queue service not connected")
-
-    deleted = await queue_service._redis.delete("autoscaler:warmup")
-
-    if deleted:
-        logger.info("warmup_cancelled")
-        return {"status": "cancelled", "message": "Warmup cancelled. Normal autoscaling resumed."}
-    else:
-        return {"status": "not_active", "message": "No active warmup to cancel."}
-
-
-@app.get("/warmup/status")
-async def warmup_status(
-    request: Request,
-    _: None = Depends(require_warmup_api_key),
-):
-    """
-    Get current warmup status.
-
-    **Requires dedicated API key** (X-Warmup-Key header).
-    """
-    if queue_service is None:
-        raise HTTPException(status_code=503, detail="Queue service not connected")
-
-    from datetime import datetime, timezone
-
-    warmup_data = await queue_service._redis.get("autoscaler:warmup")
-
-    if not warmup_data:
-        return {
-            "status": "inactive",
-            "message": "No active warmup. Normal autoscaling is active.",
-        }
-
-    data = json.loads(warmup_data)
-    warmup_until = datetime.fromtimestamp(data["until"], tz=timezone.utc)
-    remaining = warmup_until - datetime.now(timezone.utc)
-    remaining_minutes = max(0, int(remaining.total_seconds() / 60))
-
-    return {
-        "status": "active",
-        "workers_requested": data["workers"],
-        "warmup_until": warmup_until.isoformat(),
-        "remaining_minutes": remaining_minutes,
     }
 
 

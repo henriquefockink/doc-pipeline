@@ -25,6 +25,7 @@ from doc_pipeline.config import ExtractorBackend, get_settings
 from doc_pipeline.observability import get_logger, get_metrics, setup_logging
 from doc_pipeline.observability.worker_metrics import WorkerMetricsPusher
 from doc_pipeline.ocr import OCREngine
+from doc_pipeline.ocr.converter import PDFConverter, is_pdf
 from doc_pipeline.preprocessing import OrientationCorrector
 from doc_pipeline.schemas import CINData, CNHData, DocumentType, ExtractionResult, RGData
 from doc_pipeline.shared import (
@@ -400,16 +401,35 @@ class DocumentWorker:
             self.metrics.queue_wait_seconds.observe(job.queue_wait_time_seconds)
 
         corrected_image_path: str | None = None
+        original_pdf_path: str | None = None
 
         try:
             # Update progress
             await self.queue.set_progress(job.request_id, "processing")
 
-            # Load image
+            # Load image (convert PDF first page if needed)
             if not Path(job.image_path).exists():
-                raise FileNotFoundError(f"Image not found: {job.image_path}")
+                raise FileNotFoundError(f"File not found: {job.image_path}")
 
-            image = Image.open(job.image_path).convert("RGB")
+            if is_pdf(job.image_path):
+                original_pdf_path = job.image_path
+                converter = PDFConverter(dpi=200)
+                pages = converter.convert(job.image_path, max_pages=1)
+                if not pages:
+                    raise ValueError("PDF has no pages")
+                image = pages[0].convert("RGB")
+                # Save converted image for inference server
+                converted_path = job.image_path.rsplit(".", 1)[0] + "_page1.png"
+                image.save(converted_path)
+                # Update job path so inference server uses the image
+                job.image_path = converted_path
+                logger.info(
+                    "pdf_converted_to_image",
+                    request_id=job.request_id,
+                    converted_path=converted_path,
+                )
+            else:
+                image = Image.open(job.image_path).convert("RGB")
 
             # Orientation correction (can be disabled via auto_rotate=False)
             auto_rotate = (job.extra_params or {}).get("auto_rotate", True)
@@ -614,6 +634,15 @@ class DocumentWorker:
                     os.unlink(job.image_path)
             except Exception as e:
                 logger.warning("temp_file_cleanup_error", path=job.image_path, error=str(e))
+            # Cleanup original PDF (job.image_path was updated to the converted PNG)
+            if original_pdf_path:
+                try:
+                    if Path(original_pdf_path).exists():
+                        os.unlink(original_pdf_path)
+                except Exception as e:
+                    logger.warning(
+                        "original_pdf_cleanup_error", path=original_pdf_path, error=str(e)
+                    )
             # Cleanup corrected image if it was created for inference server
             if corrected_image_path:
                 try:

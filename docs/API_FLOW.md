@@ -5,126 +5,191 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 ## Visão Geral
 
 ```
-┌──────────┐     ┌──────────┐     ┌─────────────────┐     ┌──────────────┐
-│  Imagem  │ ──► │ FastAPI  │ ──► │  Classificador  │ ──► │   Extrator   │
-│  (RG/CNH)│     │          │     │  (EfficientNet) │     │ (VLM ou OCR) │
-└──────────┘     └──────────┘     └─────────────────┘     └──────────────┘
-                                          │                       │
-                                          ▼                       ▼
-                                   ┌─────────────┐         ┌─────────────┐
-                                   │ Tipo + Conf │         │ Dados JSON  │
-                                   └─────────────┘         └─────────────┘
+┌──────────┐     ┌──────────┐     ┌─────────────┐     ┌────────────┐     ┌──────────────┐
+│  Imagem  │ ──► │ FastAPI  │ ──► │   Worker    │ ──► │  Inference │ ──► │   Resposta   │
+│(RG/CNH/  │     │  (API)   │     │  (DocID)    │     │   Server   │     │    JSON      │
+│  CIN)    │     │          │     │             │     │  (VLM GPU) │     │              │
+└──────────┘     └──────────┘     └─────────────┘     └────────────┘     └──────────────┘
+                  Enfileira         Classifica +        Batched           Entrega via
+                  no Redis          Preprocessa         Inference         sync/webhook
 ```
 
-## Fluxo Detalhado - POST /process
+## Fluxo Detalhado - POST /process (Produção)
 
-### 1. Requisição HTTP
+### 1. Requisição HTTP → API
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ REQUISIÇÃO HTTP                                                             │
+│ CLIENT                                                                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ curl -X POST http://localhost:8001/process \                                │
+│ curl -X POST http://localhost:9000/process \                                │
 │   -H "X-API-Key: sua-api-key" \                                             │
-│   -F "arquivo=@rg_aberto.jpg"                                               │
+│   -F "arquivo=@rg_aberto.jpg" \                                             │
+│   -F "delivery_mode=sync"                                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-> **Nota**: O header `X-API-Key` é obrigatório se `DOC_PIPELINE_API_KEY` estiver configurado.
-
-### 2. FastAPI - Recepção
+### 2. API — Validação e Enfileiramento
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ FastAPI (api.py:147)                                                        │
+│ API (api.py) — Port 9000                                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ async def process(arquivo: UploadFile, extract: bool = True, ...)           │
-│   • Lê bytes do arquivo: contents = await arquivo.read()                    │
-│   • Converte para PIL: image = Image.open(io.BytesIO(contents)).convert("RGB")
-│   • Chama pipeline.process(image, extract=True, min_confidence=0.5)         │
+│ 1. Autenticação: Verifica X-API-Key (se configurada)                        │
+│ 2. Rate limiting: SlowAPI com backend Redis                                 │
+│ 3. Validação: Formato de imagem (JPEG, PNG, HEIC, HEIF, AVIF, TIFF, BMP)  │
+│ 4. Salva imagem em disco temporário (/tmp/doc-pipeline/)                    │
+│ 5. Cria JobContext com request_id, operation, delivery_mode                │
+│ 6. LPUSH job na fila Redis: queue:doc:documents                             │
+│                                                                             │
+│ Se sync: Faz polling na key Redis job:result:{request_id} (max 5min)        │
+│ Se webhook: Retorna 202 imediatamente                                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 3. Pipeline - Orquestração
+### 3. Worker — Consome Job
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ DocumentPipeline.process() (pipeline.py:145)                                │
+│ WORKER DOCID (worker_docid.py) — Ports 9010-9026                            │
 ├─────────────────────────────────────────────────────────────────────────────┤
-│ def process(image, extract=True, min_confidence=0.5):                       │
-│   • classification = self.classify(image)  ──────────────────────┐          │
-│   • if classification.confidence >= min_confidence:              │          │
-│       extraction = self.extract(image, classification.document_type)        │
-│   • return PipelineResult(classification, extraction)                       │
+│ 1. BRPOP job de queue:doc:documents (blocking wait)                         │
+│ 2. Carrega imagem do disco                                                  │
+│ 3. Converte para RGB (suporte HEIC/HEIF via pillow-heif)                   │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 4. Classificação + Extração (Paralelo)
+### 4. Preprocessamento — Correção de Orientação
 
 ```
-                    ┌─────────────────────────────────────┐
-                    ▼                                     ▼
-┌───────────────────────────────────┐   ┌───────────────────────────────────┐
-│ 4a. CLASSIFICAÇÃO                 │   │ 4b. EXTRAÇÃO                      │
-│     (classifier/adapter.py)       │   │     (pipeline.py:91)              │
-├───────────────────────────────────┤   ├───────────────────────────────────┤
-│ ClassifierAdapter.classify()      │   │ @property extractor:              │
-│                                   │   │ if backend == QWEN_VL:            │
-│ • EfficientNet-B0 processa imagem │   │     return QwenVLExtractor()      │
-│ • Softmax sobre 8 classes         │   │ elif backend == EASY_OCR:          │
-│ • Retorna:                        │   │     return EasyOCRExtractor()      │
-│   {                               │   │                                   │
-│     document_type: "rg_aberto",   │   │ extractor.extract(image, doc_type)│
-│     confidence: 0.97,             │   │         │                         │
-│     all_probabilities: {...}      │   │         ▼                         │
-│   }                               │   │   document_type.is_rg → extract_rg│
-└───────────────────────────────────┘   └───────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ ORIENTATION CORRECTOR (preprocessing/orientation.py)                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│   Imagem ──► EXIF check ──► docTR MobileNetV3 ──► Rotação corrigida         │
+│                                                                             │
+│ Passo 1: Verifica EXIF metadata (câmera salvou orientação?)                 │
+│   • Se sim: aplica rotação do EXIF                                          │
+│                                                                             │
+│ Passo 2: Classificação docTR (modelo ~6MB, MobileNetV3)                     │
+│   • Input: imagem 512×512                                                   │
+│   • Output: ângulo (0°, 90°, 180°, 270°) + confiança                       │
+│   • Se confiança ≥ threshold (0.5): aplica rotação                          │
+│                                                                             │
+│ Retorna: ImageCorrection {was_corrected, rotation_applied, method, conf}    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5. Backends de Extração
+### 5. Classificação — EfficientNet
 
 ```
-                          ┌───────────────────────────────────────────────────┐
-                          ▼                                                   ▼
-┌──────────────────────────────────────────────┐   ┌──────────────────────────────────────────────┐
-│ 5a. QWEN-VL (extractors/qwen_vl.py)          │   │ 5b. EasyOCR (extractors/easyocr.py)          │
-│     ~16GB VRAM                               │   │     ~2GB VRAM                                │
-├──────────────────────────────────────────────┤   ├──────────────────────────────────────────────┤
-│ extract_rg():                                │   │ extract_rg():                                │
-│                                              │   │                                              │
-│ 1. Carrega Qwen2.5-VL-7B-Instruct (lazy)     │   │ 1. Carrega EasyOCR-2.0-hf (lazy)             │
-│                                              │   │                                              │
-│ 2. Monta mensagem com imagem + prompt:       │   │ 2. Extrai texto com OCR:                     │
-│    ┌────────────────────────────────────┐    │   │    ┌────────────────────────────────────┐    │
-│    │ "Extraia os campos deste RG:       │    │   │    │ model.chat(tokenizer, image,       │    │
-│    │  nome, cpf, rg, data_nascimento... │    │   │    │            ocr_type="format")      │    │
-│    │  Retorne JSON, use null se ausente"│    │   │    └────────────────────────────────────┘    │
-│    └────────────────────────────────────┘    │   │                                              │
-│                                              │   │ 3. Retorno OCR (texto puro):                 │
-│ 3. VLM gera resposta estruturada:            │   │    ┌────────────────────────────────────┐    │
-│    ┌────────────────────────────────────┐    │   │    │ REPÚBLICA FEDERATIVA DO BRASIL     │    │
-│    │ {                                  │    │   │    │ REGISTRO GERAL                     │    │
-│    │   "nome": "JOÃO DA SILVA",         │    │   │    │ 12.345.678-9                       │    │
-│    │   "cpf": "123.456.789-00",         │    │   │    │ NOME                               │    │
-│    │   "rg": "12.345.678-9",            │    │   │    │ JOÃO DA SILVA                      │    │
-│    │   "data_nascimento": "15/03/1985", │    │   │    │ FILIAÇÃO                           │    │
-│    │   ...                              │    │   │    │ JOSÉ DA SILVA                      │    │
-│    │ }                                  │    │   │    │ MARIA DA SILVA                     │    │
-│    └────────────────────────────────────┘    │   │    │ CPF 123.456.789-00                 │    │
-│                                              │   │    │ ...                                │    │
-│ 4. Parseia JSON → RGData                     │   │    └────────────────────────────────────┘    │
-│                                              │   │                                              │
-│                                              │   │ 4. Parseia com REGEX (_parse_rg_from_text):  │
-│                                              │   │    • CPF: r"(\d{3}\.\d{3}\.\d{3}-\d{2})"     │
-│                                              │   │    • Data: r"(\d{2}/\d{2}/\d{4})"            │
-│                                              │   │    • Órgão: r"SSP[\-/]?[A-Z]{2}"             │
-│                                              │   │    • Nome: linha após "NOME"                │
-│                                              │   │                                              │
-│                                              │   │ 5. Monta RGData com campos encontrados       │
-└──────────────────────────────────────────────┘   └──────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ CLASSIFICADOR (classifier/adapter.py)                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ EfficientNet-B0 processa imagem (local no worker, ~100ms)                   │
+│                                                                             │
+│ • Softmax sobre 12 classes                                                  │
+│ • Retorna:                                                                  │
+│   {                                                                         │
+│     document_type: "rg_aberto",                                             │
+│     confidence: 0.97                                                        │
+│   }                                                                         │
+│                                                                             │
+│ Se confiança < min_confidence (0.5):                                        │
+│   → Pula extração, retorna erro "baixa confiança"                           │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6. Resposta JSON
+### 6. Extração — Inference Server (Backend Hybrid)
+
+```
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ WORKER envia request para INFERENCE SERVER                                   │
+├──────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│ Worker (lightweight, ~800MB):                                                │
+│ 1. Monta prompt baseado no doc_type (RG/CNH/CIN)                            │
+│ 2. Serializa imagem + prompt                                                 │
+│ 3. LPUSH para queue:doc:inference                                            │
+│ 4. Polling em inference:result:{inference_id} (aguarda resultado)            │
+│                                                                              │
+│ ┌─────────────────────────────────────────────────────────────────────────┐  │
+│ │ INFERENCE SERVER (inference_server.py) — Port 9020 — GPU ~14GB         │  │
+│ ├─────────────────────────────────────────────────────────────────────────┤  │
+│ │                                                                         │  │
+│ │ 1. BRPOP primeiro request de queue:doc:inference                        │  │
+│ │ 2. Coleta mais requests (RPOP não-bloqueante) até:                      │  │
+│ │    • INFERENCE_BATCH_SIZE (default 8) ou                                │  │
+│ │    • INFERENCE_BATCH_TIMEOUT_MS (default 100ms)                         │  │
+│ │ 3. Processa batch em forward pass único (Qwen2.5-VL-7B)                │  │
+│ │ 4. SET resultado em inference:result:{id} para cada request             │  │
+│ │                                                                         │  │
+│ │ Prompt exemplo (RG):                                                    │  │
+│ │ ┌───────────────────────────────────────────────────────────────────┐   │  │
+│ │ │ "Extraia os campos deste RG brasileiro:                          │   │  │
+│ │ │  nome, cpf, rg, data_nascimento, nome_pai, nome_mae,            │   │  │
+│ │ │  naturalidade, data_expedicao, orgao_expedidor                   │   │  │
+│ │ │  Retorne JSON. Use null se ausente."                             │   │  │
+│ │ └───────────────────────────────────────────────────────────────────┘   │  │
+│ │                                                                         │  │
+│ │ Resposta VLM:                                                           │  │
+│ │ {                                                                       │  │
+│ │   "nome": "JOÃO DA SILVA",                                              │  │
+│ │   "cpf": "123.456.789-00",                                              │  │
+│ │   "rg": "12.345.678-9",                                                 │  │
+│ │   "data_nascimento": "15/03/1985",                                      │  │
+│ │   ...                                                                   │  │
+│ │ }                                                                       │  │
+│ └─────────────────────────────────────────────────────────────────────────┘  │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 7. Validação de CPF (Backend Hybrid)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ CPF VALIDATION (utils/cpf.py) — Exclusivo do backend hybrid                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ 1. Valida CPF extraído pelo VLM (algoritmo módulo 11)                       │
+│    └─► CPF válido? → Continua                                               │
+│    └─► CPF inválido? → Fallback:                                            │
+│                                                                             │
+│ 2. FALLBACK: EasyOCR extrai texto bruto da imagem                           │
+│    • Busca padrões numéricos: ###.###.###-##                                │
+│    • Testa cada candidato com algoritmo de CPF                              │
+│    • Se encontra válido: substitui o CPF do VLM                             │
+│                                                                             │
+│ 3. SWAP DETECTION: Verifica se RG e CPF estão trocados                      │
+│    • Se campo "rg" contém formato de CPF e vice-versa → troca               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 8. Entrega do Resultado
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ DELIVERY SERVICE (shared/delivery.py)                                       │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│ SYNC (default):                                                             │
+│   Worker SET resultado em job:result:{request_id} no Redis                  │
+│   API (que estava fazendo polling) lê o resultado e retorna ao cliente       │
+│                                                                             │
+│ WEBHOOK:                                                                    │
+│   Worker POST resultado para a webhook_url do job                           │
+│   • Retries com backoff exponencial                                         │
+│   • Timeout configurável                                                    │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### 9. Resposta JSON
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────────────────────┐
@@ -134,8 +199,7 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 │   "file_path": null,                                                                            │
 │   "classification": {                                                                           │
 │     "document_type": "rg_aberto",                                                               │
-│     "confidence": 0.97,                                                                         │
-│     "all_probabilities": { "rg_aberto": 0.97, "rg_frente": 0.01, ... }                          │
+│     "confidence": 0.97                                                                          │
 │   },                                                                                            │
 │   "extraction": {                                                                               │
 │     "document_type": "rg_aberto",                                                               │
@@ -151,7 +215,13 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 │       "orgao_expedidor": "SSP-SP"                                                               │
 │     },                                                                                          │
 │     "raw_text": null,                                                                           │
-│     "backend": "qwen-vl"  ◄─── ou "easy-ocr"                                                     │
+│     "backend": "hybrid"                                                                         │
+│   },                                                                                            │
+│   "image_correction": {                                                                         │
+│     "was_corrected": true,                                                                      │
+│     "rotation_applied": 90,                                                                     │
+│     "correction_method": "doctr_classification",                                                │
+│     "confidence": 0.98                                                                          │
 │   },                                                                                            │
 │   "success": true,                                                                              │
 │   "error": null                                                                                 │
@@ -161,25 +231,86 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 
 ---
 
+## Fluxo por Backend
+
+### Backend Hybrid (Padrão em Produção)
+
+```
+Imagem ──► docTR (orientação) ──► EfficientNet (classificação)
+                                         │
+                                         ▼
+                               Inference Server (VLM)
+                                         │
+                                    JSON bruto
+                                         │
+                                         ▼
+                              CPF válido? (módulo 11)
+                                   │           │
+                                  SIM         NÃO
+                                   │           │
+                                   │     EasyOCR fallback
+                                   │     (busca CPF válido)
+                                   │           │
+                                   ▼           ▼
+                              Swap check (RG↔CPF)
+                                         │
+                                         ▼
+                                    RGData/CNHData/CINData
+```
+
+### Backend VLM
+
+```
+Imagem ──► docTR (orientação) ──► EfficientNet (classificação)
+                                         │
+                                         ▼
+                               Inference Server (VLM)
+                                         │
+                                    JSON direto
+                                         │
+                                         ▼
+                                    RGData/CNHData/CINData
+```
+
+### Backend OCR
+
+```
+Imagem ──► docTR (orientação) ──► EfficientNet (classificação)
+                                         │
+                                         ▼
+                                   EasyOCR (texto)
+                                         │
+                                  Regex parsing
+                                         │
+                                         ▼
+                                    RGData/CNHData/CINData
+```
+
+---
+
 ## Comparativo dos Backends
 
 ```
-┌─────────────────────────┬────────────────────────────┬────────────────────────────┐
-│                         │         QWEN-VL            │         EasyOCR            │
-├─────────────────────────┼────────────────────────────┼────────────────────────────┤
-│ Modelo                  │ Qwen2.5-VL-7B-Instruct     │ EasyOCR-2.0-hf             │
-│ VRAM                    │ ~16GB                      │ ~2GB                       │
-│ Tempo extração          │ ~3-5s                      │ ~1-2s                      │
-├─────────────────────────┼────────────────────────────┼────────────────────────────┤
-│ Estratégia              │ Prompt → JSON direto       │ OCR → Regex parsing        │
-├─────────────────────────┼────────────────────────────┼────────────────────────────┤
-│ Campos contextuais      │ ✅ Excelente               │ ⚠️ Limitado                │
-│ (nome_pai vs nome_mae)  │ Entende contexto           │ Depende da ordem no texto  │
-├─────────────────────────┼────────────────────────────┼────────────────────────────┤
-│ Documentos danificados  │ ✅ Infere campos           │ ❌ Só extrai o visível     │
-├─────────────────────────┼────────────────────────────┼────────────────────────────┤
-│ Custo GPU               │ Alto                       │ Baixo                      │
-└─────────────────────────┴────────────────────────────┴────────────────────────────┘
+┌─────────────────────────┬──────────────────┬──────────────────┬──────────────────┐
+│                         │     HYBRID       │      VLM         │     OCR          │
+├─────────────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ Modelo                  │ Qwen + EasyOCR   │ Qwen2.5-VL-7B   │ EasyOCR          │
+│ VRAM (worker)           │ ~800MB           │ ~800MB           │ ~2GB             │
+│ VRAM (inference server) │ ~14GB            │ ~14GB            │ N/A              │
+│ Tempo extração          │ ~15s             │ ~5s              │ ~2s              │
+├─────────────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ Estratégia              │ VLM + fallback   │ Prompt → JSON    │ OCR → Regex      │
+│                         │ OCR para CPF     │ direto           │                  │
+├─────────────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ CPF accuracy            │ ✅ Melhor        │ ⚠️ VLM erra     │ ⚠️ Depende OCR   │
+│                         │ (validação +     │   dígitos às     │                  │
+│                         │  fallback)       │   vezes          │                  │
+├─────────────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ Campos contextuais      │ ✅ VLM entende   │ ✅ Excelente     │ ⚠️ Limitado      │
+│ (nome_pai vs nome_mae)  │ contexto         │                  │ (depende ordem)  │
+├─────────────────────────┼──────────────────┼──────────────────┼──────────────────┤
+│ Documentos danificados  │ ✅ VLM infere    │ ✅ Infere campos │ ❌ Só visível    │
+└─────────────────────────┴──────────────────┴──────────────────┴──────────────────┘
 ```
 
 ---
@@ -188,11 +319,10 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 
 | Cenário | Recomendação |
 |---------|--------------|
-| Produção com GPU potente (24GB+) | **qwen-vl** |
-| GPU limitada (8GB) | **easy-ocr** |
-| Alta precisão em campos contextuais | **qwen-vl** |
-| Alto volume, menor precisão aceitável | **easy-ocr** |
-| Multi-GPU (classificador + extrator separados) | **qwen-vl** em GPU dedicada |
+| Produção (precisão CPF é crítica) | **hybrid** (default) |
+| Alta velocidade, precisão aceitável | **vlm** |
+| GPU limitada (<8GB), sem inference server | **ocr** |
+| Multi-GPU (classificador + extrator separados) | **hybrid** ou **vlm** |
 
 ---
 
@@ -201,90 +331,71 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 | Etapa | Tempo |
 |-------|-------|
 | Upload + decode imagem | ~50ms |
+| Correção de orientação (docTR) | ~50ms |
 | Classificação (EfficientNet) | ~100ms |
-| Extração (Qwen-VL) | ~3-5s |
-| Extração (EasyOCR) | ~1-2s |
-| **Total com Qwen-VL** | **~3-6s** |
-| **Total com EasyOCR** | **~1-3s** |
+| Extração (Hybrid: VLM + CPF validation) | ~15s |
+| Extração (VLM only) | ~5s |
+| Extração (EasyOCR) | ~2s |
+| **Total com Hybrid** | **~15-16s** |
+| **Total com VLM** | **~5-6s** |
+| **Total com EasyOCR** | **~2-3s** |
+
+Com batching (batch_size=8), throughput: ~3-4 docs/s vs ~0.2 docs/s sequencial.
 
 ---
 
 ## Fluxo de Erro
 
-Quando a confiança está abaixo do mínimo:
+### Baixa Confiança
 
+```json
+{
+  "classification": {
+    "document_type": "rg_frente",
+    "confidence": 0.35
+  },
+  "extraction": null,
+  "success": false,
+  "error": "Confiança (35.0%) abaixo do mínimo (50.0%)"
+}
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ RESPOSTA - BAIXA CONFIANÇA                                                  │
-├─────────────────────────────────────────────────────────────────────────────┤
-│ {                                                                           │
-│   "file_path": null,                                                        │
-│   "classification": {                                                       │
-│     "document_type": "rg_frente",                                           │
-│     "confidence": 0.35,                                                     │
-│     "all_probabilities": { ... }                                            │
-│   },                                                                        │
-│   "extraction": null,  ◄─── Extração não executada                          │
-│   "success": false,                                                         │
-│   "error": "Confiança (35.0%) abaixo do mínimo (50.0%)"                     │
-│ }                                                                           │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
+
+### Timeout (Sync Mode)
+
+Se o worker não processar dentro de 5 minutos, a API retorna timeout. O job pode ainda estar sendo processado — o cliente pode consultar `/jobs/{id}/status`.
 
 ---
 
 ## Endpoints Disponíveis
 
-| Método | Endpoint | Descrição | Usa Classificador | Usa Extrator | Auth |
-|--------|----------|-----------|:-----------------:|:------------:|:----:|
-| POST | `/process` | Pipeline completo | ✅ | ✅ | ✅ |
-| POST | `/classify` | Apenas classificação | ✅ | ❌ | ✅ |
-| POST | `/extract?doc_type=...` | Apenas extração | ❌ | ✅ | ✅ |
-| GET | `/health` | Status da API | ❌ | ❌ | ❌ |
-| GET | `/classes` | Lista classes | ❌ | ❌ | ✅ |
+| Método | Endpoint | Classificador | Extrator | Inference Server | Auth |
+|--------|----------|:-------------:|:--------:|:----------------:|:----:|
+| POST | `/process` | ✅ | ✅ | ✅ | ✅ |
+| POST | `/classify` | ✅ | ❌ | ❌ | ✅ |
+| POST | `/extract?doc_type=...` | ❌ | ✅ | ✅ | ✅ |
+| POST | `/ocr` | ❌ | ❌ | ❌ | ✅ |
+| GET | `/jobs/{id}/status` | ❌ | ❌ | ❌ | ✅ |
+| GET | `/health` | ❌ | ❌ | ❌ | ❌ |
+| GET | `/metrics` | ❌ | ❌ | ❌ | ❌ |
 
 ---
 
 ## Autenticação
 
-Se a variável `DOC_PIPELINE_API_KEY` estiver configurada no `.env`, a API requer autenticação via header `X-API-Key` em todos os endpoints exceto `/health`.
+Se `DOC_PIPELINE_API_KEY` estiver configurada, a API requer `X-API-Key` em todos os endpoints exceto `/health` e `/metrics`.
 
 ```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│ FLUXO DE AUTENTICAÇÃO                                                       │
-├─────────────────────────────────────────────────────────────────────────────┤
-│                                                                             │
-│   Request ──► API Key configurada? ──► NÃO ──► Acesso liberado              │
-│                      │                                                      │
-│                     SIM                                                     │
-│                      │                                                      │
-│                      ▼                                                      │
-│               Header X-API-Key presente? ──► NÃO ──► 401 Unauthorized       │
-│                      │                                                      │
-│                     SIM                                                     │
-│                      │                                                      │
-│                      ▼                                                      │
-│               Key válida? ──► NÃO ──► 403 Forbidden                         │
-│                      │                                                      │
-│                     SIM                                                     │
-│                      │                                                      │
-│                      ▼                                                      │
-│               Acesso liberado                                               │
-│                                                                             │
-└─────────────────────────────────────────────────────────────────────────────┘
-```
-
-### Exemplos com Autenticação
-
-```bash
-# Variável de ambiente (recomendado)
-export DOC_PIPELINE_API_KEY="sua-api-key-aqui"
-
-# Pipeline completo
-curl -X POST http://localhost:8001/process \
-  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
-  -F "arquivo=@documento.jpg"
-
-# Health check (não requer auth)
-curl http://localhost:8001/health
+Request ──► API Key configurada? ──► NÃO ──► Acesso liberado
+                  │
+                 SIM
+                  │
+                  ▼
+           Header X-API-Key? ──► NÃO ──► 401 Unauthorized
+                  │
+                 SIM
+                  │
+                  ▼
+           Key válida? ──► NÃO ──► 403 Forbidden
+                  │
+                 SIM ──► Acesso liberado
 ```

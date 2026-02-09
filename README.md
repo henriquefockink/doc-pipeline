@@ -1,60 +1,61 @@
 # doc-pipeline
 
-Pipeline de classificação e extração de dados de documentos brasileiros (RG/CNH).
+Pipeline de processamento de documentos brasileiros (RG, CNH e CIN) com classificação automática e extração de dados estruturados.
+
+## Funcionalidades
+
+- **Classificação** de 12 tipos de documentos via EfficientNet (rg/cnh/cin x frente/verso/aberto/digital)
+- **Extração de dados** estruturados via VLM (Qwen2.5-VL), OCR+regex (EasyOCR) ou modo híbrido
+- **OCR genérico** para PDFs e imagens, com suporte a português
+- **Correção automática de orientação** via docTR (MobileNetV3)
+- **Validação de CPF** com detecção de swap RG↔CPF
+- **Autoscaling** de workers baseado na profundidade da fila
+- **Warmup API** para pré-escalar workers antes de carga esperada
+- **Batched inference** via servidor centralizado para alto throughput
 
 ## Arquitetura
 
 ```
-[Imagem] → [Classificador EfficientNet] → [Tipo: RG/CNH]
-                                               ↓
-                                    [VLM: Qwen2.5-VL ou EasyOCR]
-                                               ↓
-                                    [Dados Estruturados JSON]
+                              ┌──────────────────────────────────────────────┐
+                              │           INFERENCE SERVER (GPU)             │
+                              │         inference_server.py :9020            │
+                              │  Qwen2.5-VL-7B — batched forward pass       │
+                              └──────────────▲──────────────┬───────────────┘
+                                             │ request      │ reply
+                                             │ (Redis)      │ (Redis)
+┌────────┐    ┌──────────────┐    ┌──────────┴──────────────▼──────────────┐
+│ Client │───►│  API :9000   │───►│         WORKER DocID × N               │
+│        │    │  (sem GPU)   │    │  EfficientNet (classify)               │
+│        │    │              │    │  docTR (orientação)                    │
+│        │    │  Redis queue  │    │  EasyOCR (OCR/hybrid)                 │
+└────────┘    └──────┬───────┘    └────────────────────────────────────────┘
+                     │
+                     │            ┌────────────────────────────────────────┐
+                     └───────────►│         WORKER OCR                     │
+                                  │  EasyOCR + docTR :9011                 │
+                                  │  PDF multi-página (150 DPI)            │
+                                  └────────────────────────────────────────┘
 ```
 
-> Para uma visão detalhada do fluxo de execução da API, consulte [docs/API_FLOW.md](docs/API_FLOW.md).
+**Fluxo principal (POST /process)**:
+1. **API** recebe imagem, salva em disco temporário, enfileira job no Redis
+2. **Worker** consome job, corrige orientação (docTR), classifica (EfficientNet)
+3. **Worker** envia imagem + prompt ao **Inference Server** via Redis
+4. **Inference Server** agrupa requests em batches, processa no VLM, devolve resultado
+5. **Worker** valida dados (CPF), entrega resultado ao cliente (sync ou webhook)
 
-## Instalação
-
-```bash
-# Clone o repositório
-git clone <repo-url>
-cd doc-pipeline
-
-# Crie e ative o ambiente virtual
-python3 -m venv venv
-source venv/bin/activate  # Linux/Mac
-# .\venv\Scripts\activate  # Windows
-
-# Instale as dependências
-pip install -r requirements.txt
-
-# Copie o modelo do classificador para a pasta models/
-cp /caminho/para/modelo.pth models/classifier.pth
-
-# Configure as variáveis de ambiente
-cp .env.example .env
-# Edite o .env e adicione seu HF_TOKEN (obrigatório)
-```
-
-### Configuração do Hugging Face Token
-
-O token do Hugging Face é **obrigatório** para download dos modelos VLM. Sem ele:
-- Downloads serão mais lentos e com rate limits
-- Modelos gated (como PyAnnote) não funcionarão
-
-1. Crie um token em: https://huggingface.co/settings/tokens
-2. Adicione ao arquivo `.env`:
-   ```env
-   HF_TOKEN=hf_seu_token_aqui
-   ```
+> Para o fluxo detalhado de cada etapa, veja [docs/API_FLOW.md](docs/API_FLOW.md).
 
 ## Quick Start
 
 ### Docker (Recomendado)
 
 ```bash
-# Subir todos os serviços
+# Configurar variáveis
+cp .env.example .env
+# Editar .env: adicionar HF_TOKEN (obrigatório)
+
+# Subir stack completo (Redis + API + Worker + Inference Server)
 docker compose up -d
 
 # Ver logs
@@ -66,123 +67,27 @@ docker compose down
 
 Serviços disponíveis:
 - **API**: http://localhost:9000
-- **Worker DocID**: Classificação e extração de RG/CNH
+- **Worker DocID**: Classificação e extração de RG/CNH/CIN
 - **Worker OCR**: OCR genérico de PDFs/imagens
+- **Inference Server**: VLM centralizado com batching
 - **Autoscaler**: Escala workers automaticamente
 
 ### Local (Desenvolvimento)
 
 ```bash
-# Ativar venv
+# Ambiente virtual
+python3 -m venv venv
 source venv/bin/activate
 
-# Subir a API (usa models/classifier.pth por padrão)
+# Dependências
+pip install -r requirements.txt
+
+# Modelo do classificador
+cp /caminho/para/modelo.pth models/classifier.pth
+
+# API local
 python api.py
-
-# A API estará disponível em http://localhost:8001
 ```
-
-## Autoscaler
-
-O autoscaler ajusta automaticamente o número de workers baseado na profundidade da fila.
-
-### Configuração
-
-| Variável | Padrão | Descrição |
-|----------|--------|-----------|
-| `MIN_WORKERS` | 1 | Mínimo de workers ativos |
-| `MAX_WORKERS` | 3 | Máximo de workers (scaling normal) |
-| `SCALE_UP_THRESHOLD` | 5 | Queue depth para escalar |
-| `SCALE_DOWN_DELAY` | 120 | Segundos com fila vazia antes de desescalar |
-
-### Comportamento
-
-```
-Queue depth ≥ 5  →  Scale up (até MAX_WORKERS)
-Queue depth = 0  →  Aguarda 120s → Scale down (até MIN_WORKERS)
-```
-
-### Workers Disponíveis
-
-| Worker | Porta | Descrição |
-|--------|-------|-----------|
-| worker-docid-1 | 9010 | Sempre ativo |
-| worker-docid-2 | 9012 | Sob demanda |
-| worker-docid-3 | 9014 | Sob demanda |
-| worker-docid-4 | 9016 | Sob demanda (warmup) |
-| worker-docid-5 | 9018 | Sob demanda (warmup) |
-
-Workers 2-5 são pré-criados e ficam parados (0 recursos). O autoscaler faz `start/stop` para escalar rapidamente.
-
-## Warmup API
-
-Permite escalar workers **antes** de uma carga esperada (ex: campanha de marketing).
-
-### Endpoints
-
-| Método | Endpoint | Descrição |
-|--------|----------|-----------|
-| POST | `/warmup` | Ativa warmup (escala workers) |
-| GET | `/warmup/status` | Status do warmup |
-| DELETE | `/warmup` | Cancela warmup |
-
-Requer header `X-Warmup-Key` com a chave configurada em `DOC_PIPELINE_WARMUP_API_KEY`.
-
-### Exemplo
-
-```bash
-# Ativar warmup: 5 workers por 30 minutos
-curl -X POST http://localhost:9000/warmup \
-  -H "X-Warmup-Key: $WARMUP_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"workers": 5, "duration_minutes": 30}'
-
-# Verificar status
-curl http://localhost:9000/warmup/status \
-  -H "X-Warmup-Key: $WARMUP_KEY"
-
-# Cancelar warmup
-curl -X DELETE http://localhost:9000/warmup \
-  -H "X-Warmup-Key: $WARMUP_KEY"
-```
-
-### Parâmetros
-
-| Parâmetro | Padrão | Range | Descrição |
-|-----------|--------|-------|-----------|
-| `workers` | 3 | 1-5 | Número de workers a manter |
-| `duration_minutes` | 30 | 5-120 | Duração do warmup |
-
-### Comportamento
-
-1. **Warmup ativo**: Autoscaler mantém mínimo de N workers (mesmo com fila vazia)
-2. **Warmup expira**: Volta ao comportamento normal (desescala até MIN_WORKERS)
-3. **Cancelamento**: Mesmo que expiração
-
-```
-Normal:     MIN_WORKERS (1) ←→ MAX_WORKERS (3)  baseado na fila
-Com warmup: WARMUP_WORKERS (5) fixo            até expirar
-```
-
-### Expor via ngrok (acesso externo)
-
-```bash
-# Iniciar API + ngrok (persiste após sair do SSH)
-./start-server.sh
-
-# Com domínio customizado (ngrok pago)
-./start-server.sh start meu-dominio.ngrok.io
-# ou
-NGROK_DOMAIN=meu-dominio.ngrok.io ./start-server.sh
-
-# Ver status
-./start-server.sh status
-
-# Parar tudo
-./stop-server.sh
-```
-
-O script usa `screen` para manter os processos rodando em background.
 
 ## Uso
 
@@ -192,7 +97,7 @@ O script usa `screen` para manter os processos rodando em background.
 # Pipeline completo (classificação + extração)
 python cli.py documento.jpg
 
-# Usar EasyOCR ao invés de Qwen (menor uso de VRAM)
+# Com EasyOCR (menor VRAM)
 python cli.py documento.jpg --backend easy-ocr
 
 # Apenas classificar
@@ -201,69 +106,36 @@ python cli.py documento.jpg --no-extraction
 # Processar pasta com saída JSON
 python cli.py ./documentos/ --json -o resultados.json
 
-# Multi-GPU: classificador em cuda:0, extractor em cuda:1
+# Multi-GPU
 python cli.py documento.jpg --classifier-device cuda:0 --extractor-device cuda:1
 ```
 
 ### API
 
 ```bash
-# Iniciar servidor (usa models/classifier.pth por padrão)
-python api.py
-
-# Com EasyOCR (menor VRAM)
-DOC_PIPELINE_EXTRACTOR_BACKEND=easy-ocr python api.py
-
-# Com modelo em outro caminho
-DOC_PIPELINE_CLASSIFIER_MODEL_PATH=/outro/caminho/modelo.pth python api.py
-```
-
-#### Endpoints
-
-| Método | Endpoint | Descrição | Auth |
-|--------|----------|-----------|:----:|
-| POST | `/process` | Pipeline completo (classificação + extração) | API Key |
-| POST | `/classify` | Apenas classificação | API Key |
-| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) | API Key |
-| POST | `/ocr` | OCR genérico de PDF/imagem | API Key |
-| GET | `/health` | Status da API | Não |
-| GET | `/metrics` | Métricas Prometheus | Não |
-| GET | `/classes` | Lista classes suportadas | API Key |
-| POST | `/warmup` | Ativa warmup de workers | Warmup Key |
-| GET | `/warmup/status` | Status do warmup | Warmup Key |
-| DELETE | `/warmup` | Cancela warmup | Warmup Key |
-
-#### Autenticação
-
-Se `DOC_PIPELINE_API_KEY` estiver configurada no `.env`, todos os endpoints (exceto `/health`) requerem o header `X-API-Key`:
-
-```bash
-# Com autenticação
-curl -X POST http://localhost:8001/process \
-  -H "X-API-Key: sua-api-key-aqui" \
-  -F "arquivo=@documento.jpg"
-```
-
-#### Exemplos
-
-```bash
 # Pipeline completo
-curl -X POST http://localhost:8001/process \
-  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+curl -X POST http://localhost:9000/process \
+  -H "X-API-Key: $API_KEY" \
   -F "arquivo=@documento.jpg"
 
 # Apenas classificar
-curl -X POST http://localhost:8001/classify \
-  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+curl -X POST http://localhost:9000/classify \
+  -H "X-API-Key: $API_KEY" \
   -F "arquivo=@documento.jpg"
 
 # Extrair dados (tipo conhecido)
-curl -X POST "http://localhost:8001/extract?doc_type=rg_frente" \
-  -H "X-API-Key: $DOC_PIPELINE_API_KEY" \
+curl -X POST "http://localhost:9000/extract?doc_type=rg_frente" \
+  -H "X-API-Key: $API_KEY" \
   -F "arquivo=@rg.jpg"
 
-# Health check (não requer auth)
-curl http://localhost:8001/health
+# OCR genérico
+curl -X POST http://localhost:9000/ocr \
+  -H "X-API-Key: $API_KEY" \
+  -F "arquivo=@contrato.pdf" \
+  -F "max_pages=5"
+
+# Health check (sem auth)
+curl http://localhost:9000/health
 ```
 
 ### Python
@@ -271,74 +143,205 @@ curl http://localhost:8001/health
 ```python
 from doc_pipeline import DocumentPipeline
 
-# Inicializa pipeline
 pipeline = DocumentPipeline(
     classifier_model_path="models/classifier.pth",
-    extractor_backend="qwen-vl",  # ou "easy-ocr"
+    extractor_backend="qwen-vl",
 )
 
-# Pipeline completo
 result = pipeline.process("documento.jpg")
 print(f"Tipo: {result.document_type.value}")
 print(f"Confiança: {result.classification.confidence:.1%}")
 if result.data:
     print(f"Nome: {result.data.nome}")
     print(f"CPF: {result.data.cpf}")
+```
 
-# Apenas classificar
-classification = pipeline.classify("documento.jpg")
+## Endpoints
 
-# Apenas extrair (tipo conhecido)
-from doc_pipeline.schemas import DocumentType
-extraction = pipeline.extract("rg.jpg", DocumentType.RG_FRENTE)
+| Método | Endpoint | Descrição | Auth |
+|--------|----------|-----------|:----:|
+| POST | `/process` | Pipeline completo (classificação + extração) | API Key |
+| POST | `/classify` | Apenas classificação | API Key |
+| POST | `/extract?doc_type=rg_frente` | Apenas extração (tipo conhecido) | API Key |
+| POST | `/ocr` | OCR genérico de PDF/imagem | API Key |
+| GET | `/jobs/{id}/status` | Status de um job (sync polling) | API Key |
+| POST | `/warmup` | Pré-escalar workers | Warmup Key |
+| GET | `/warmup/status` | Status do warmup | Warmup Key |
+| DELETE | `/warmup` | Cancelar warmup | Warmup Key |
+| GET | `/health` | Status da API | Não |
+| GET | `/metrics` | Métricas Prometheus | Não |
+| GET | `/classes` | Lista classes suportadas | API Key |
+
+### Modos de Entrega
+
+| Modo | Comportamento |
+|------|---------------|
+| `sync` (default) | API faz polling no Redis até resultado (max 5min) |
+| `webhook` | Retorna 202 imediatamente, POSTa resultado na URL informada |
+
+### Resposta (POST /process)
+
+```json
+{
+  "file_path": null,
+  "classification": {
+    "document_type": "rg_aberto",
+    "confidence": 0.97
+  },
+  "extraction": {
+    "document_type": "rg_aberto",
+    "data": {
+      "nome": "JOÃO DA SILVA",
+      "cpf": "123.456.789-00",
+      "rg": "12.345.678-9",
+      "data_nascimento": "15/03/1985",
+      "nome_pai": "JOSÉ DA SILVA",
+      "nome_mae": "MARIA DA SILVA",
+      "naturalidade": "SÃO PAULO-SP",
+      "data_expedicao": "10/05/2020",
+      "orgao_expedidor": "SSP-SP"
+    },
+    "backend": "hybrid"
+  },
+  "image_correction": {
+    "was_corrected": true,
+    "rotation_applied": 90,
+    "correction_method": "doctr_classification",
+    "confidence": 0.98
+  },
+  "success": true,
+  "error": null
+}
 ```
 
 ## Backends de Extração
 
-| Backend | Modelo | VRAM | Uso |
-|---------|--------|------|-----|
-| **qwen-vl** (default) | Qwen/Qwen2.5-VL-7B-Instruct | ~16GB | Extração contextualizada com prompts |
-| **easy-ocr** | EasyOCR | ~2GB | OCR + parsing com regex |
+| Backend | Estratégia | Velocidade | Precisão |
+|---------|-----------|:----------:|:--------:|
+| **hybrid** (default) | VLM extrai dados + EasyOCR valida CPF com algoritmo | ~15s | Melhor (CPF) |
+| **vlm** | Qwen2.5-VL extrai tudo via prompt→JSON | ~5s | Boa |
+| **ocr** | EasyOCR + parsing com regex | ~2s | Menor |
 
-## Campos Extraídos
+O backend **hybrid** é o padrão em produção:
+1. VLM (Qwen) extrai dados estruturados diretamente da imagem
+2. Valida CPF usando o algoritmo oficial (módulo 11)
+3. Se CPF inválido, faz fallback para EasyOCR e tenta corrigir
+4. Detecta e corrige swap entre campos RG e CPF
 
-### RG
+## Documentos Suportados
 
-| Campo | Descrição |
-|-------|-----------|
-| nome | Nome completo |
-| nome_pai | Nome do pai |
-| nome_mae | Nome da mãe |
-| data_nascimento | Data de nascimento (DD/MM/AAAA) |
-| naturalidade | Cidade/Estado de nascimento |
-| cpf | CPF (###.###.###-##) |
-| rg | Número do RG |
-| data_expedicao | Data de expedição |
-| orgao_expedidor | Órgão expedidor (ex: SSP-SP) |
+### Tipos (12 classes)
 
-### CNH
+| Documento | Variantes |
+|-----------|-----------|
+| **RG** (Registro Geral) | `rg_frente`, `rg_verso`, `rg_aberto`, `rg_digital` |
+| **CNH** (Carteira Nacional de Habilitação) | `cnh_frente`, `cnh_verso`, `cnh_aberta`, `cnh_digital` |
+| **CIN** (Carteira de Identidade Nacional) | `cin_frente`, `cin_verso`, `cin_aberta`, `cin_digital` |
 
-| Campo | Descrição |
-|-------|-----------|
-| nome | Nome completo |
-| cpf | CPF (###.###.###-##) |
-| data_nascimento | Data de nascimento (DD/MM/AAAA) |
-| numero_registro | Número de registro da CNH |
-| numero_espelho | Número do espelho |
-| validade | Data de validade |
-| categoria | Categoria (A, B, AB, C, D, E) |
-| observacoes | Observações/restrições |
-| primeira_habilitacao | Data da primeira habilitação |
+### Campos Extraídos
+
+**RG**: nome, nome_pai, nome_mae, data_nascimento, naturalidade, cpf, rg, data_expedicao, orgao_expedidor
+
+**CNH**: nome, cpf, data_nascimento, doc_identidade, numero_registro, numero_espelho, validade, categoria, observacoes, primeira_habilitacao
+
+**CIN**: nome, nome_pai, nome_mae, data_nascimento, naturalidade, cpf, data_expedicao, orgao_expedidor
+
+## Preprocessamento
+
+### Correção de Orientação (docTR)
+
+Antes de classificar e extrair, o pipeline corrige automaticamente a orientação da imagem:
+
+1. **EXIF metadata** — Corrige rotação salva pela câmera
+2. **docTR classification** — MobileNetV3 classifica orientação em 4 ângulos (0°, 90°, 180°, 270°)
+3. Aplica rotação se confiança acima do threshold (default: 0.5)
+
+Isso resolve documentos fotografados de lado ou de cabeça para baixo.
+
+## Infraestrutura
+
+### Portas
+
+| Serviço | Porta | Descrição |
+|---------|-------|-----------|
+| API | 9000 | REST API (FastAPI) |
+| Workers DocID 1-5 | 9010, 9012, 9014, 9016, 9018 | Health + métricas |
+| Workers DocID 6-8 | 9022, 9024, 9026 | Scale-profile workers |
+| Worker OCR | 9011 | Health + métricas |
+| Inference Server | 9020 | VLM centralizado |
+
+### Inference Server (Batching)
+
+O inference server centraliza o VLM (Qwen2.5-VL) e processa requests em lotes:
+
+```
+Workers enviam requests → Redis queue → Inference Server agrupa em batch
+                                                    ↓
+                                        Forward pass único no GPU
+                                                    ↓
+                                        Replies via Redis keys → Workers
+```
+
+| Config | Default | Descrição |
+|--------|---------|-----------|
+| `INFERENCE_BATCH_SIZE` | 4 | Max requests por batch |
+| `INFERENCE_BATCH_TIMEOUT_MS` | 100 | Max espera para encher batch |
+| `WORKER_CONCURRENT_JOBS` | 4 | Jobs paralelos por worker |
+
+Benefícios: workers ficam leves (~800MB), GPU é compartilhada eficientemente, throughput aumenta ~66% vs. sequencial.
+
+### Autoscaler
+
+Monitora profundidade da fila e escala workers automaticamente:
+
+```
+Queue depth ≥ 5  →  Scale up (até MAX_WORKERS)
+Queue depth = 0  →  Aguarda 120s → Scale down (até MIN_WORKERS)
+```
+
+| Variável | Padrão | Descrição |
+|----------|--------|-----------|
+| `MIN_WORKERS` | 1 | Mínimo de workers ativos |
+| `MAX_WORKERS` | 3 | Máximo de workers (scaling normal) |
+| `SCALE_UP_THRESHOLD` | 5 | Queue depth para escalar |
+| `SCALE_DOWN_DELAY` | 120 | Segundos antes de desescalar |
+
+Workers 2-8 são pré-criados e ficam parados (0 recursos). O autoscaler faz start/stop para escalar rapidamente.
+
+### Warmup API
+
+Permite escalar workers **antes** de uma carga esperada:
+
+```bash
+# Ativar: 5 workers por 30 minutos
+curl -X POST http://localhost:9000/warmup \
+  -H "X-Warmup-Key: $WARMUP_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"workers": 5, "duration_minutes": 30}'
+
+# Status
+curl http://localhost:9000/warmup/status -H "X-Warmup-Key: $WARMUP_KEY"
+
+# Cancelar
+curl -X DELETE http://localhost:9000/warmup -H "X-Warmup-Key: $WARMUP_KEY"
+```
+
+### Autenticação
+
+Se `DOC_PIPELINE_API_KEY` estiver configurada, todos os endpoints (exceto `/health` e `/metrics`) requerem `X-API-Key` no header.
+
+### ngrok (Acesso Externo)
+
+```bash
+./start-server.sh                              # URL aleatória
+./start-server.sh start meu-dominio.ngrok.io   # Domínio customizado
+./start-server.sh status
+./stop-server.sh
+```
 
 ## Configuração
 
-### Environment Variables
-
-Copie `.env.example` para `.env` e configure:
-
-```bash
-cp .env.example .env
-```
+Copie `.env.example` para `.env`:
 
 ```env
 # Hugging Face (OBRIGATÓRIO)
@@ -348,147 +351,75 @@ HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
 DOC_PIPELINE_CLASSIFIER_MODEL_PATH=models/classifier.pth
 DOC_PIPELINE_CLASSIFIER_MODEL_TYPE=efficientnet_b0
 DOC_PIPELINE_CLASSIFIER_DEVICE=cuda:0
-DOC_PIPELINE_CLASSIFIER_FP8=false
 
-# Extractor
-DOC_PIPELINE_EXTRACTOR_BACKEND=qwen-vl  # ou easy-ocr
+# Extrator
+DOC_PIPELINE_EXTRACTOR_BACKEND=hybrid        # hybrid, qwen-vl, ou easy-ocr
 DOC_PIPELINE_EXTRACTOR_DEVICE=cuda:0
 DOC_PIPELINE_EXTRACTOR_MODEL_QWEN=Qwen/Qwen2.5-VL-7B-Instruct
 
+# Orientação
+DOC_PIPELINE_ORIENTATION_ENABLED=true
+DOC_PIPELINE_ORIENTATION_CONFIDENCE_THRESHOLD=0.5
+
 # API
 DOC_PIPELINE_API_HOST=0.0.0.0
-DOC_PIPELINE_API_PORT=8001
-DOC_PIPELINE_API_KEY=sua-api-key-secreta  # Autenticação (opcional)
+DOC_PIPELINE_API_PORT=9000
+DOC_PIPELINE_API_KEY=sua-api-key             # opcional
+DOC_PIPELINE_WARMUP_API_KEY=sua-warmup-key   # para /warmup
 
-# Geral
-DOC_PIPELINE_MIN_CONFIDENCE=0.5
-DOC_PIPELINE_WARMUP_ON_START=true  # Carrega modelos na inicialização
+# Inference Server
+DOC_PIPELINE_INFERENCE_SERVER_ENABLED=true
+DOC_PIPELINE_INFERENCE_BATCH_SIZE=8
+DOC_PIPELINE_INFERENCE_TIMEOUT=30
 ```
-
-## Requisitos de Hardware
-
-| Configuração | GPU | VRAM |
-|--------------|-----|------|
-| Classifier + EasyOCR | 1x | 8GB+ |
-| Classifier + Qwen-VL | 1x | 24GB+ |
-| Multi-GPU | 2x | 8GB + 16GB |
-
-## Classes de Documentos
-
-- `cnh_aberta` - CNH aberta (frente e verso visíveis)
-- `cnh_digital` - CNH digital
-- `cnh_frente` - CNH frente
-- `cnh_verso` - CNH verso
-- `rg_aberto` - RG aberto (frente e verso visíveis)
-- `rg_digital` - RG digital
-- `rg_frente` - RG frente
-- `rg_verso` - RG verso
-
-## Estrutura do Projeto
-
-```
-doc-pipeline/
-├── api.py                 # FastAPI REST server
-├── cli.py                 # Command-line interface
-├── start-server.sh        # Script para iniciar API + ngrok
-├── stop-server.sh         # Script para parar todos os serviços
-├── models/
-│   └── classifier.pth     # Modelo EfficientNet (não versionado)
-├── doc_pipeline/
-│   ├── pipeline.py        # Orquestrador principal
-│   ├── config.py          # Configurações (pydantic-settings)
-│   ├── schemas.py         # Modelos Pydantic (RGData, CNHData, etc.)
-│   ├── classifier/        # Adapter para doc-classifier
-│   ├── extractors/        # Backends de extração (Qwen-VL, EasyOCR)
-│   └── prompts/           # Templates de extração
-└── docs/
-    └── API_FLOW.md        # Documentação detalhada do fluxo
-```
-
-## Dependências
-
-- Python 3.12+
-- PyTorch 2.0+
-- transformers 4.49+
-- python-dotenv 1.0+
-
-### Opcionais
-
-```bash
-# Flash Attention 2 (melhora performance ~20%)
-pip install -e ".[flash]"
-```
-
-## Desenvolvimento
-
-### Setup
-
-```bash
-# Instalar dependências de desenvolvimento
-pip install -e ".[dev]"
-
-# Configurar pre-commit hooks
-pre-commit install
-```
-
-### Code Quality
-
-O projeto usa [Ruff](https://docs.astral.sh/ruff/) para linting e formatação (substitui black, isort e flake8).
-
-```bash
-# Rodar linter
-ruff check .
-
-# Rodar linter com auto-fix
-ruff check . --fix
-
-# Formatar código
-ruff format .
-
-# Rodar todos os hooks (inclui ruff)
-pre-commit run --all-files
-```
-
-### Regras configuradas
-
-| Regra | Descrição |
-|-------|-----------|
-| E | pycodestyle errors |
-| F | pyflakes |
-| I | isort (ordenação de imports) |
-| B | flake8-bugbear |
-| UP | pyupgrade |
-| SIM | flake8-simplify |
 
 ## Monitoramento
 
 ### Métricas Prometheus
-
-A API expõe métricas em `/metrics`:
 
 ```bash
 curl http://localhost:9000/metrics
 ```
 
 Métricas principais:
-- `doc_pipeline_jobs_processed_total` - Jobs processados
-- `doc_pipeline_worker_processing_seconds` - Tempo de processamento
-- `doc_pipeline_autoscaler_workers_current` - Workers ativos
-- `doc_pipeline_autoscaler_queue_depth` - Profundidade da fila
+- `doc_pipeline_jobs_processed_total{operation, status, delivery_mode}` — Jobs processados
+- `doc_pipeline_worker_processing_seconds{operation}` — Tempo de processamento
+- `doc_pipeline_queue_depth` — Profundidade da fila
+- `doc_pipeline_autoscaler_workers_current` — Workers ativos
+- `inference_batch_size` — Tamanho dos batches no inference server
 
 ### Grafana
 
 Dashboards disponíveis:
-- **Doc Pipeline Overview** - Métricas gerais, autoscaler, queue
-- **Worker DocID** - Métricas específicas do worker de documentos
-- **Worker OCR** - Métricas do worker de OCR
-
-Para criar/atualizar dashboards no Grafana de produção:
+- **Doc Pipeline Overview** — Métricas gerais, autoscaler, fila
+- **Worker DocID** — Processing time, confidence, document types
+- **Worker OCR** — Processing time, delivery, errors
 
 ```bash
 ./monitoring/scripts/create-dashboards.sh
 ./monitoring/scripts/create-alerts.sh
 ```
+
+## Desenvolvimento
+
+```bash
+pip install -e ".[dev]"
+pre-commit install
+
+# Linting
+ruff check .
+ruff format .
+pre-commit run --all-files
+```
+
+## Requisitos de Hardware
+
+| Configuração | VRAM |
+|--------------|------|
+| Inference Server (Qwen2.5-VL-7B) | ~14GB |
+| Worker DocID (EfficientNet + docTR + EasyOCR) | ~800MB |
+| Worker OCR (EasyOCR + docTR) | ~2GB |
+| Stack completo (1 worker + inference) | ~16GB |
 
 ## Licença
 

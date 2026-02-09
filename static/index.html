@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DocID API - Processamento Inteligente de Documentos</title>
+    <style>
+        :root, [data-theme="dark"] {
+            --bg: #0a0e1a;
+            --bg-card: #111827;
+            --bg-card-hover: #1a2332;
+            --accent: #3b82f6;
+            --accent-light: #60a5fa;
+            --accent-glow: rgba(59, 130, 246, 0.15);
+            --green: #10b981;
+            --green-glow: rgba(16, 185, 129, 0.15);
+            --amber: #f59e0b;
+            --text: #f1f5f9;
+            --text-muted: #94a3b8;
+            --border: #1e293b;
+            --code-bg: #0d1117;
+            --nav-bg: rgba(10, 14, 26, 0.85);
+            --section-alt: #0d1320;
+        }
+        [data-theme="light"] {
+            --bg: #f8fafc;
+            --bg-card: #ffffff;
+            --bg-card-hover: #f1f5f9;
+            --accent: #2563eb;
+            --accent-light: #3b82f6;
+            --accent-glow: rgba(37, 99, 235, 0.08);
+            --green: #059669;
+            --green-glow: rgba(5, 150, 105, 0.08);
+            --amber: #d97706;
+            --text: #0f172a;
+            --text-muted: #64748b;
+            --border: #e2e8f0;
+            --code-bg: #f1f5f9;
+            --nav-bg: rgba(248, 250, 252, 0.85);
+            --section-alt: #f1f5f9;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.6;
+            overflow-x: hidden;
+        }
+
+        /* Nav */
+        nav {
+            position: fixed; top: 0; width: 100%; z-index: 100;
+            background: var(--nav-bg);
+            backdrop-filter: blur(20px);
+            border-bottom: 1px solid var(--border);
+            padding: 0 2rem;
+        }
+        .nav-inner {
+            max-width: 1200px; margin: 0 auto;
+            display: flex; align-items: center; justify-content: space-between;
+            height: 64px;
+        }
+        .logo { font-size: 1.4rem; font-weight: 700; letter-spacing: -0.5px; }
+        .logo span { color: var(--accent); }
+        .nav-right { display: flex; align-items: center; gap: 2rem; }
+        .nav-links { display: flex; gap: 2rem; }
+        .theme-toggle {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 100px; width: 44px; height: 26px;
+            cursor: pointer; position: relative; transition: all 0.3s;
+            flex-shrink: 0;
+        }
+        .theme-toggle::after {
+            content: ''; position: absolute; top: 3px; left: 3px;
+            width: 18px; height: 18px; border-radius: 50%;
+            background: var(--accent); transition: transform 0.3s;
+        }
+        [data-theme="light"] .theme-toggle::after { transform: translateX(18px); }
+        .nav-links a {
+            color: var(--text-muted); text-decoration: none; font-size: 0.9rem;
+            transition: color 0.2s;
+        }
+        .nav-links a:hover { color: var(--text); }
+
+        /* Hero */
+        .hero {
+            padding: 10rem 2rem 6rem;
+            text-align: center;
+            position: relative;
+        }
+        .hero::before {
+            content: '';
+            position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+            width: 800px; height: 600px;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .hero h1 {
+            font-size: clamp(2.5rem, 6vw, 4rem);
+            font-weight: 800; letter-spacing: -1.5px;
+            line-height: 1.1; margin-bottom: 1.5rem;
+        }
+        .hero h1 .gradient {
+            background: linear-gradient(135deg, var(--accent-light), var(--green));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .hero p {
+            font-size: 1.25rem; color: var(--text-muted);
+            max-width: 640px; margin: 0 auto 2.5rem;
+        }
+        .hero-badges {
+            display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap;
+            margin-bottom: 3rem;
+        }
+        .badge {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 100px; padding: 0.5rem 1.2rem;
+            font-size: 0.85rem; color: var(--text-muted);
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+        .cta-group { display: flex; gap: 1rem; justify-content: center; flex-wrap: wrap; }
+        .btn {
+            padding: 0.85rem 2rem; border-radius: 10px; font-size: 1rem;
+            font-weight: 600; text-decoration: none; transition: all 0.2s;
+            cursor: pointer; border: none;
+        }
+        .btn-primary {
+            background: var(--accent); color: white;
+            box-shadow: 0 0 30px rgba(59,130,246,0.3);
+        }
+        .btn-primary:hover { background: var(--accent-light); transform: translateY(-1px); }
+        .btn-secondary {
+            background: transparent; color: var(--text);
+            border: 1px solid var(--border);
+        }
+        .btn-secondary:hover { border-color: var(--accent); background: var(--accent-glow); }
+
+        /* Sections */
+        section { padding: 5rem 2rem; }
+        .container { max-width: 1200px; margin: 0 auto; }
+        .section-title {
+            font-size: 2rem; font-weight: 700; text-align: center;
+            margin-bottom: 0.75rem; letter-spacing: -0.5px;
+        }
+        .section-subtitle {
+            color: var(--text-muted); text-align: center; font-size: 1.1rem;
+            max-width: 600px; margin: 0 auto 3rem;
+        }
+
+        /* Stats */
+        .stats {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 1.5rem; margin-bottom: 2rem;
+        }
+        .stat {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 2rem; text-align: center;
+            transition: all 0.3s;
+        }
+        .stat:hover { border-color: var(--accent); background: var(--bg-card-hover); }
+        .stat-value {
+            font-size: 2.5rem; font-weight: 800; letter-spacing: -1px;
+            background: linear-gradient(135deg, var(--accent-light), var(--green));
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        .stat-label { color: var(--text-muted); font-size: 0.9rem; margin-top: 0.25rem; }
+
+        /* Features Grid */
+        .features-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 1.5rem;
+        }
+        .feature-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 2rem;
+            transition: all 0.3s; position: relative; overflow: hidden;
+        }
+        .feature-card:hover { border-color: var(--accent); transform: translateY(-2px); }
+        .feature-icon {
+            width: 48px; height: 48px; border-radius: 12px;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 1.5rem; margin-bottom: 1rem;
+        }
+        .feature-icon.blue { background: var(--accent-glow); }
+        .feature-icon.green { background: var(--green-glow); }
+        .feature-icon.amber { background: rgba(245,158,11,0.15); }
+        .feature-card h3 { font-size: 1.15rem; margin-bottom: 0.5rem; font-weight: 600; }
+        .feature-card p { color: var(--text-muted); font-size: 0.95rem; }
+
+        /* How it works */
+        .flow {
+            display: flex; align-items: stretch; gap: 0;
+            justify-content: center; flex-wrap: wrap;
+            margin: 2rem 0;
+        }
+        .flow-step {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 2rem 1.5rem; text-align: center;
+            flex: 1; min-width: 200px; max-width: 260px;
+            position: relative;
+        }
+        .flow-arrow {
+            display: flex; align-items: center; justify-content: center;
+            color: var(--accent); font-size: 1.5rem; padding: 0 0.5rem;
+            min-width: 40px;
+        }
+        .flow-number {
+            width: 32px; height: 32px; border-radius: 50%;
+            background: var(--accent); color: white;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: 700; font-size: 0.9rem;
+            margin: 0 auto 1rem;
+        }
+        .flow-step h4 { margin-bottom: 0.5rem; font-size: 1rem; }
+        .flow-step p { color: var(--text-muted); font-size: 0.85rem; }
+
+        /* Documents */
+        .doc-types {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+        }
+        .doc-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 2rem;
+        }
+        .doc-card h3 { font-size: 1.15rem; margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.5rem; }
+        .doc-tag {
+            font-size: 0.7rem; background: var(--accent-glow); color: var(--accent-light);
+            padding: 0.2rem 0.6rem; border-radius: 100px; font-weight: 600;
+        }
+        .doc-fields { list-style: none; }
+        .doc-fields li {
+            padding: 0.35rem 0; color: var(--text-muted); font-size: 0.9rem;
+            display: flex; align-items: center; gap: 0.5rem;
+        }
+        .doc-fields li::before {
+            content: ''; width: 6px; height: 6px; border-radius: 50%;
+            background: var(--green); flex-shrink: 0;
+        }
+
+        /* API Demo */
+        .api-demo {
+            display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem;
+            align-items: start;
+        }
+        .code-block {
+            background: var(--code-bg); border: 1px solid var(--border);
+            border-radius: 16px; overflow: hidden;
+        }
+        .code-header {
+            padding: 0.75rem 1.25rem; border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 0.5rem;
+            font-size: 0.8rem; color: var(--text-muted);
+        }
+        .code-dots { display: flex; gap: 6px; }
+        .code-dots span {
+            width: 12px; height: 12px; border-radius: 50%;
+        }
+        .code-dots span:nth-child(1) { background: #ef4444; }
+        .code-dots span:nth-child(2) { background: #f59e0b; }
+        .code-dots span:nth-child(3) { background: #10b981; }
+        .code-body {
+            padding: 1.25rem; font-family: 'SF Mono', 'Fira Code', monospace;
+            font-size: 0.85rem; line-height: 1.7; overflow-x: auto;
+            white-space: pre; color: var(--text-muted);
+        }
+        .code-body .kw { color: #c084fc; }
+        .code-body .str { color: #34d399; }
+        .code-body .num { color: #fbbf24; }
+        .code-body .key { color: var(--accent-light); }
+        .code-body .cm { color: #475569; }
+        [data-theme="light"] .code-body { color: #334155; }
+        [data-theme="light"] .code-body .kw { color: #7c3aed; }
+        [data-theme="light"] .code-body .str { color: #059669; }
+        [data-theme="light"] .code-body .num { color: #d97706; }
+        [data-theme="light"] .code-body .cm { color: #94a3b8; }
+        [data-theme="light"] .hero h1 .gradient {
+            background: linear-gradient(135deg, #2563eb, #059669);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        [data-theme="light"] .stat-value {
+            background: linear-gradient(135deg, #2563eb, #059669);
+            -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+        }
+        [data-theme="light"] .btn-primary {
+            box-shadow: 0 0 20px rgba(37, 99, 235, 0.2);
+        }
+        [data-theme="light"] .code-dots span:nth-child(1) { background: #fca5a5; }
+        [data-theme="light"] .code-dots span:nth-child(2) { background: #fcd34d; }
+        [data-theme="light"] .code-dots span:nth-child(3) { background: #6ee7b7; }
+
+        /* Performance */
+        .perf-grid {
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+            gap: 1.5rem;
+        }
+        .perf-card {
+            background: var(--bg-card); border: 1px solid var(--border);
+            border-radius: 16px; padding: 2rem;
+        }
+        .perf-card h3 { font-size: 1rem; margin-bottom: 1rem; color: var(--text-muted); }
+        .perf-bar-group { display: flex; flex-direction: column; gap: 0.75rem; }
+        .perf-bar-label {
+            display: flex; justify-content: space-between; font-size: 0.85rem;
+            margin-bottom: 0.25rem;
+        }
+        .perf-bar-label span:last-child { color: var(--accent-light); font-weight: 600; }
+        .perf-bar {
+            height: 8px; background: var(--border); border-radius: 4px; overflow: hidden;
+        }
+        .perf-bar-fill {
+            height: 100%; border-radius: 4px; transition: width 1s ease;
+        }
+        .perf-bar-fill.blue { background: linear-gradient(90deg, var(--accent), var(--accent-light)); }
+        .perf-bar-fill.green { background: linear-gradient(90deg, #059669, var(--green)); }
+        .perf-bar-fill.amber { background: linear-gradient(90deg, #d97706, var(--amber)); }
+
+        /* CTA */
+        .cta-section {
+            text-align: center; padding: 6rem 2rem;
+            position: relative;
+        }
+        .cta-section::before {
+            content: '';
+            position: absolute; bottom: 0; left: 50%; transform: translateX(-50%);
+            width: 600px; height: 400px;
+            background: radial-gradient(ellipse, var(--accent-glow) 0%, transparent 70%);
+            pointer-events: none;
+        }
+        .cta-section h2 { font-size: 2.5rem; margin-bottom: 1rem; letter-spacing: -1px; }
+        .cta-section p { color: var(--text-muted); font-size: 1.1rem; margin-bottom: 2rem; }
+
+        /* Footer */
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 2rem; text-align: center;
+            color: var(--text-muted); font-size: 0.85rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 768px) {
+            .api-demo { grid-template-columns: 1fr; }
+            .flow-arrow { transform: rotate(90deg); padding: 0.5rem 0; }
+            .flow { flex-direction: column; align-items: center; }
+            .flow-step { max-width: 100%; }
+            .nav-links { display: none; }
+            section { padding: 3rem 1rem; }
+        }
+    </style>
+</head>
+<body>
+
+<nav>
+    <div class="nav-inner">
+        <div class="logo">Doc<span>ID</span></div>
+        <div class="nav-right">
+            <div class="nav-links">
+                <a href="#features">Funcionalidades</a>
+                <a href="#how-it-works">Como Funciona</a>
+                <a href="#documents">Documentos</a>
+                <a href="#api">API</a>
+                <a href="#performance">Performance</a>
+            </div>
+            <button class="theme-toggle" id="themeToggle" aria-label="Alternar tema claro/escuro"></button>
+        </div>
+    </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+    <div class="hero-badges">
+        <div class="badge"><div class="dot"></div> API Online</div>
+        <div class="badge">REST API</div>
+        <div class="badge">Webhook & Sync</div>
+    </div>
+    <h1>Processamento Inteligente<br>de <span class="gradient">Documentos Brasileiros</span></h1>
+    <p>API que classifica, corrige orientacao e extrai dados estruturados de RG, CNH e CIN automaticamente. Integre em minutos.</p>
+    <div class="cta-group">
+        <a href="#api" class="btn btn-primary">Ver API</a>
+        <a href="#documents" class="btn btn-secondary">Documentos Suportados</a>
+    </div>
+</section>
+
+<!-- Stats -->
+<section>
+    <div class="container">
+        <div class="stats">
+            <div class="stat">
+                <div class="stat-value">12</div>
+                <div class="stat-label">Tipos de documentos</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">&lt;5s</div>
+                <div class="stat-label">Tempo de processamento</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">100%</div>
+                <div class="stat-label">Uptime sob carga</div>
+            </div>
+            <div class="stat">
+                <div class="stat-value">30+</div>
+                <div class="stat-label">Campos extraidos</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Features -->
+<section id="features">
+    <div class="container">
+        <div class="section-title">Tudo que voce precisa em uma API</div>
+        <div class="section-subtitle">Da imagem ao dado estruturado, com inteligencia artificial e validacao automatica.</div>
+        <div class="features-grid">
+            <div class="feature-card">
+                <div class="feature-icon blue">&#x1F4CB;</div>
+                <h3>Classificacao Automatica</h3>
+                <p>Identifica automaticamente o tipo de documento entre 12 categorias (RG, CNH, CIN) incluindo frente, verso, aberto e digital.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon green">&#x1F4DD;</div>
+                <h3>Extracao de Dados</h3>
+                <p>Extrai nome, CPF, RG, data de nascimento, filiacao e todos os campos relevantes em formato JSON estruturado.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon amber">&#x1F504;</div>
+                <h3>Correcao de Orientacao</h3>
+                <p>Detecta e corrige automaticamente documentos fotografados de lado, invertidos ou com rotacao. Sem intervencao manual.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon blue">&#x2705;</div>
+                <h3>Validacao de CPF</h3>
+                <p>Valida CPF extraido usando o algoritmo oficial, com fallback inteligente e deteccao de campos trocados (RG/CPF).</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon green">&#x1F4C4;</div>
+                <h3>OCR Generico</h3>
+                <p>Alem de documentos de identidade, extraia texto de qualquer PDF ou imagem com suporte nativo a portugues e diacriticos.</p>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon amber">&#x26A1;</div>
+                <h3>Alta Performance</h3>
+                <p>Processamento otimizado em lote com workers dedicados. Zero erros em testes de carga com 450 requisicoes simultaneas.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- How it works -->
+<section id="how-it-works" style="background: linear-gradient(180deg, var(--bg) 0%, var(--section-alt) 100%);">
+    <div class="container">
+        <div class="section-title">Como Funciona</div>
+        <div class="section-subtitle">Envie a imagem, receba os dados. Simples assim.</div>
+        <div class="flow">
+            <div class="flow-step">
+                <div class="flow-number">1</div>
+                <h4>Envie o Documento</h4>
+                <p>Upload via API REST (JPEG, PNG, PDF, HEIC). Suporta qualquer angulo ou orientacao.</p>
+            </div>
+            <div class="flow-arrow">&#x2192;</div>
+            <div class="flow-step">
+                <div class="flow-number">2</div>
+                <h4>Processamento IA</h4>
+                <p>Correcao automatica de orientacao, classificacao do tipo e extracao inteligente dos campos.</p>
+            </div>
+            <div class="flow-arrow">&#x2192;</div>
+            <div class="flow-step">
+                <div class="flow-number">3</div>
+                <h4>Validacao</h4>
+                <p>CPF validado com algoritmo oficial. Campos cruzados e verificados automaticamente.</p>
+            </div>
+            <div class="flow-arrow">&#x2192;</div>
+            <div class="flow-step">
+                <div class="flow-number">4</div>
+                <h4>Dados Estruturados</h4>
+                <p>Receba JSON com todos os campos extraidos, prontos para integracao no seu sistema.</p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Documents -->
+<section id="documents">
+    <div class="container">
+        <div class="section-title">Documentos Suportados</div>
+        <div class="section-subtitle">Cobertura completa dos principais documentos de identidade brasileiros.</div>
+        <div class="doc-types">
+            <div class="doc-card">
+                <h3>RG <span class="doc-tag">Registro Geral</span></h3>
+                <ul class="doc-fields">
+                    <li>Nome completo</li>
+                    <li>CPF</li>
+                    <li>Numero do RG</li>
+                    <li>Data de nascimento</li>
+                    <li>Filiacao (pai e mae)</li>
+                    <li>Naturalidade</li>
+                    <li>Data de expedicao</li>
+                    <li>Orgao expedidor</li>
+                </ul>
+            </div>
+            <div class="doc-card">
+                <h3>CNH <span class="doc-tag">Habilitacao</span></h3>
+                <ul class="doc-fields">
+                    <li>Nome completo</li>
+                    <li>CPF</li>
+                    <li>Numero de registro</li>
+                    <li>Numero do espelho</li>
+                    <li>Categoria (A, B, AB, C, D, E)</li>
+                    <li>Data de validade</li>
+                    <li>Primeira habilitacao</li>
+                    <li>Observacoes/restricoes</li>
+                </ul>
+            </div>
+            <div class="doc-card">
+                <h3>CIN <span class="doc-tag">Identidade Nacional</span></h3>
+                <ul class="doc-fields">
+                    <li>Nome completo</li>
+                    <li>CPF</li>
+                    <li>Data de nascimento</li>
+                    <li>Filiacao (pai e mae)</li>
+                    <li>Naturalidade</li>
+                    <li>Data de expedicao</li>
+                    <li>Orgao expedidor</li>
+                </ul>
+            </div>
+        </div>
+        <p style="text-align:center; color: var(--text-muted); margin-top: 1.5rem; font-size: 0.9rem;">
+            Cada documento suporta 4 variantes: <strong>frente</strong>, <strong>verso</strong>, <strong>aberto</strong> e <strong>digital</strong> &mdash; total de 12 tipos classificados automaticamente.
+        </p>
+    </div>
+</section>
+
+<!-- API -->
+<section id="api" style="background: linear-gradient(180deg, var(--bg) 0%, var(--section-alt) 100%);">
+    <div class="container">
+        <div class="section-title">API Simples e Poderosa</div>
+        <div class="section-subtitle">Uma chamada para classificar, extrair e validar. Resposta sync ou via webhook.</div>
+        <div class="api-demo">
+            <div class="code-block">
+                <div class="code-header">
+                    <div class="code-dots"><span></span><span></span><span></span></div>
+                    &nbsp; Request
+                </div>
+                <div class="code-body"><span class="cm"># Pipeline completo: classifica + extrai</span>
+<span class="kw">curl</span> -X POST https://sua-api.com/process \
+  -H <span class="str">"X-API-Key: $API_KEY"</span> \
+  -F <span class="str">"arquivo=@documento.jpg"</span>
+
+<span class="cm"># Apenas classificar</span>
+<span class="kw">curl</span> -X POST https://sua-api.com/classify \
+  -H <span class="str">"X-API-Key: $API_KEY"</span> \
+  -F <span class="str">"arquivo=@documento.jpg"</span>
+
+<span class="cm"># OCR generico (PDF/imagem)</span>
+<span class="kw">curl</span> -X POST https://sua-api.com/ocr \
+  -H <span class="str">"X-API-Key: $API_KEY"</span> \
+  -F <span class="str">"arquivo=@contrato.pdf"</span></div>
+            </div>
+            <div class="code-block">
+                <div class="code-header">
+                    <div class="code-dots"><span></span><span></span><span></span></div>
+                    &nbsp; Response
+                </div>
+                <div class="code-body">{
+  <span class="key">"classification"</span>: {
+    <span class="key">"document_type"</span>: <span class="str">"rg_aberto"</span>,
+    <span class="key">"confidence"</span>: <span class="num">0.97</span>
+  },
+  <span class="key">"extraction"</span>: {
+    <span class="key">"data"</span>: {
+      <span class="key">"nome"</span>: <span class="str">"JOAO DA SILVA"</span>,
+      <span class="key">"cpf"</span>: <span class="str">"123.456.789-00"</span>,
+      <span class="key">"rg"</span>: <span class="str">"12.345.678-9"</span>,
+      <span class="key">"data_nascimento"</span>: <span class="str">"15/03/1985"</span>,
+      <span class="key">"nome_pai"</span>: <span class="str">"JOSE DA SILVA"</span>,
+      <span class="key">"nome_mae"</span>: <span class="str">"MARIA DA SILVA"</span>
+    }
+  },
+  <span class="key">"image_correction"</span>: {
+    <span class="key">"was_corrected"</span>: <span class="num">true</span>,
+    <span class="key">"rotation_applied"</span>: <span class="num">90</span>
+  },
+  <span class="key">"success"</span>: <span class="num">true</span>
+}</div>
+            </div>
+        </div>
+        <div style="margin-top: 2rem;">
+            <div class="stats" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+                <div class="stat" style="padding: 1.25rem;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">POST</div>
+                    <div style="font-weight: 600; font-size: 0.95rem;">/process</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">Pipeline completo</div>
+                </div>
+                <div class="stat" style="padding: 1.25rem;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">POST</div>
+                    <div style="font-weight: 600; font-size: 0.95rem;">/classify</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">Classificacao</div>
+                </div>
+                <div class="stat" style="padding: 1.25rem;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">POST</div>
+                    <div style="font-weight: 600; font-size: 0.95rem;">/extract</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">Extracao</div>
+                </div>
+                <div class="stat" style="padding: 1.25rem;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">POST</div>
+                    <div style="font-weight: 600; font-size: 0.95rem;">/ocr</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">OCR generico</div>
+                </div>
+                <div class="stat" style="padding: 1.25rem;">
+                    <div style="font-size: 0.8rem; color: var(--text-muted); margin-bottom: 0.25rem;">GET</div>
+                    <div style="font-weight: 600; font-size: 0.95rem;">/health</div>
+                    <div style="font-size: 0.8rem; color: var(--text-muted);">Status</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Performance -->
+<section id="performance">
+    <div class="container">
+        <div class="section-title">Performance Comprovada</div>
+        <div class="section-subtitle">Testado com 450 requisicoes simultaneas. Zero erros.</div>
+        <div class="perf-grid">
+            <div class="perf-card">
+                <h3>Throughput</h3>
+                <div class="perf-bar-group">
+                    <div>
+                        <div class="perf-bar-label"><span>Otimizado</span><span>3-4 docs/s</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill blue" style="width: 85%;"></div></div>
+                    </div>
+                    <div>
+                        <div class="perf-bar-label"><span>Baseline</span><span>0.5 docs/s</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill blue" style="width: 12%;"></div></div>
+                    </div>
+                </div>
+                <p style="color: var(--green); font-size: 0.85rem; margin-top: 1rem; font-weight: 600;">+66% throughput com batch processing</p>
+            </div>
+            <div class="perf-card">
+                <h3>Latencia (P50)</h3>
+                <div class="perf-bar-group">
+                    <div>
+                        <div class="perf-bar-label"><span>Classificacao</span><span>~100ms</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill green" style="width: 5%;"></div></div>
+                    </div>
+                    <div>
+                        <div class="perf-bar-label"><span>Extracao rapida</span><span>~2s</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill green" style="width: 15%;"></div></div>
+                    </div>
+                    <div>
+                        <div class="perf-bar-label"><span>Pipeline completo</span><span>~5s</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill green" style="width: 35%;"></div></div>
+                    </div>
+                </div>
+                <p style="color: var(--green); font-size: 0.85rem; margin-top: 1rem; font-weight: 600;">-57% latencia vs. processamento sequencial</p>
+            </div>
+            <div class="perf-card">
+                <h3>Confiabilidade</h3>
+                <div class="perf-bar-group">
+                    <div>
+                        <div class="perf-bar-label"><span>Taxa de sucesso</span><span>100%</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill amber" style="width: 100%;"></div></div>
+                    </div>
+                    <div>
+                        <div class="perf-bar-label"><span>Erros sob carga</span><span>0</span></div>
+                        <div class="perf-bar"><div class="perf-bar-fill amber" style="width: 0%;"></div></div>
+                    </div>
+                </div>
+                <p style="color: var(--green); font-size: 0.85rem; margin-top: 1rem; font-weight: 600;">450/450 requisicoes processadas com sucesso</p>
+            </div>
+        </div>
+        <div class="stats" style="margin-top: 2rem; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
+            <div class="stat" style="padding: 1.5rem;">
+                <div class="stat-value" style="font-size: 1.8rem;">Auto</div>
+                <div class="stat-label">Scaling de workers</div>
+            </div>
+            <div class="stat" style="padding: 1.5rem;">
+                <div class="stat-value" style="font-size: 1.8rem;">Batch</div>
+                <div class="stat-label">Processamento em lote</div>
+            </div>
+            <div class="stat" style="padding: 1.5rem;">
+                <div class="stat-value" style="font-size: 1.8rem;">Webhook</div>
+                <div class="stat-label">Entrega assincrona</div>
+            </div>
+            <div class="stat" style="padding: 1.5rem;">
+                <div class="stat-value" style="font-size: 1.8rem;">GPU</div>
+                <div class="stat-label">Aceleracao dedicada</div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Integrations -->
+<section style="background: linear-gradient(180deg, var(--bg) 0%, var(--section-alt) 100%);">
+    <div class="container">
+        <div class="section-title">Integracao Flexivel</div>
+        <div class="section-subtitle">Dois modos de entrega para se adaptar ao seu fluxo.</div>
+        <div class="api-demo">
+            <div class="feature-card">
+                <div class="feature-icon blue">&#x23F3;</div>
+                <h3>Modo Sincrono</h3>
+                <p>Envie o documento e receba o resultado na mesma requisicao. Ideal para fluxos interativos onde o usuario aguarda o processamento.</p>
+                <div style="margin-top: 1rem; padding: 1rem; background: var(--code-bg); border-radius: 8px; font-family: monospace; font-size: 0.8rem;">
+                    <span style="color: var(--text-muted);">POST /process</span><br>
+                    <span style="color: var(--green);">200 OK</span> <span style="color: var(--text-muted);">+ resultado completo</span>
+                </div>
+            </div>
+            <div class="feature-card">
+                <div class="feature-icon green">&#x1F514;</div>
+                <h3>Modo Webhook</h3>
+                <p>Receba um 202 imediatamente e o resultado sera enviado via POST para sua URL quando pronto. Ideal para processamento em massa.</p>
+                <div style="margin-top: 1rem; padding: 1rem; background: var(--code-bg); border-radius: 8px; font-family: monospace; font-size: 0.8rem;">
+                    <span style="color: var(--text-muted);">POST /process?delivery_mode=webhook</span><br>
+                    <span style="color: var(--amber);">202 Accepted</span> <span style="color: var(--text-muted);">+ callback quando pronto</span>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section class="cta-section">
+    <h2>Pronto para comecar?</h2>
+    <p>Integre processamento de documentos no seu produto em minutos.</p>
+    <div class="cta-group">
+        <a href="/docs" class="btn btn-primary">Documentacao da API</a>
+        <a href="/health" class="btn btn-secondary">Verificar Status</a>
+    </div>
+</section>
+
+<footer>
+    <div class="container">
+        DocID API &mdash; Processamento Inteligente de Documentos Brasileiros
+    </div>
+</footer>
+
+<script>
+(function() {
+    const toggle = document.getElementById('themeToggle');
+    const html = document.documentElement;
+    const saved = localStorage.getItem('docid-theme');
+    if (saved) {
+        html.setAttribute('data-theme', saved);
+    } else if (window.matchMedia('(prefers-color-scheme: light)').matches) {
+        html.setAttribute('data-theme', 'light');
+    }
+    toggle.addEventListener('click', function() {
+        const current = html.getAttribute('data-theme') || 'dark';
+        const next = current === 'dark' ? 'light' : 'dark';
+        html.setAttribute('data-theme', next);
+        localStorage.setItem('docid-theme', next);
+    });
+})();
+</script>
+
+</body>
+</html>
