@@ -1,0 +1,54 @@
+server:
+  http_listen_port: 9040
+  grpc_listen_port: 0
+
+positions:
+  filename: /promtail/positions.yaml
+
+clients:
+  - url: https://speech-analytics-loki-dev.paneas.com/loki/api/v1/push
+    timeout: 10s
+    backoff_config:
+      min_period: 500ms
+      max_period: 5m
+      max_retries: 10
+
+scrape_configs:
+  - job_name: doc-pipeline
+    docker_sd_configs:
+      - host: unix:///var/run/docker.sock
+        refresh_interval: 10s
+        filters:
+          - name: label
+            values: ["com.docker.compose.project=doc-pipeline"]
+
+    relabel_configs:
+      # Container name as label
+      - source_labels: ["__meta_docker_container_name"]
+        regex: "/(.*)"
+        target_label: container
+      # Compose service name prefixed with doc-pipeline-
+      - source_labels: ["__meta_docker_container_label_com_docker_compose_service"]
+        regex: "(.*)"
+        target_label: service
+        replacement: "doc-pipeline-$1"
+      # Static labels
+      - target_label: job
+        replacement: doc-pipeline
+      - target_label: environment
+        replacement: dev
+
+    pipeline_stages:
+      # Docker logs come as JSON with "log", "stream", "time" fields
+      - docker: {}
+      # Try to parse structured JSON logs from our services
+      - match:
+          selector: '{job="doc-pipeline"}'
+          stages:
+            - json:
+                expressions:
+                  level: level
+                  event: event
+            - labels:
+                level:
+                event:

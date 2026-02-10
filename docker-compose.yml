@@ -299,11 +299,23 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # Promtail — log collector for doc-pipeline containers
+  promtail:
+    image: grafana/promtail:latest
+    container_name: doc-pipeline-promtail
+    volumes:
+      - ./promtail-config.yaml:/etc/promtail/config.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail-positions:/promtail
+    command: -config.file=/etc/promtail/config.yaml
+    restart: unless-stopped
+
 volumes:
   redis-data:
   temp-images:
   model-cache:
   easyocr-cache:
+  promtail-positions:
 
 networks:
   default:
