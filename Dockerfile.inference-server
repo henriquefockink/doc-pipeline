@@ -4,10 +4,12 @@ FROM pytorch/pytorch:2.7.0-cuda12.8-cudnn9-runtime
 
 WORKDIR /app
 
-# Install system dependencies (including EasyOCR requirements)
+# Install system dependencies (including EasyOCR requirements + gcc for Triton JIT)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     git \
+    gcc \
+    g++ \
     libgl1 \
     libglib2.0-0 \
     libsm6 \
@@ -16,7 +18,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Python dependencies (VLM + EasyOCR + Redis + API)
+# Install Python dependencies (VLM + EasyOCR + Redis + API + vLLM embedded)
 RUN pip install --no-cache-dir \
     "transformers>=4.57.0" \
     "accelerate>=0.26.0" \
@@ -34,7 +36,8 @@ RUN pip install --no-cache-dir \
     "redis[hiredis]>=5.0.0" \
     "httpx>=0.27.0" \
     "easyocr>=1.7.0" \
-    "PyMuPDF>=1.24.0"
+    "PyMuPDF>=1.24.0" \
+    "vllm>=0.8.0"
 
 # Copy application code
 COPY inference_server.py .

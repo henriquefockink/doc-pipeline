@@ -48,15 +48,15 @@ pytest tests/test_foo.py -k "test_name"  # single test
                                     ┌─────────────────────────────────────────────────┐
                                     │                 GPU Node                        │
                                     │                                                 │
-Client ─► api.py ─► Redis queue ──► │  inference_server.py (port 9020, GPU ~3-4GB)    │
+Client ─► api.py ─► Redis queue ──► │  inference_server.py (port 9020, GPU)           │
            (9000)    (6379)         │    ├── EfficientNet classifier (~200MB)          │
            no GPU                   │    ├── EasyOCR engine (~2-4GB)                   │
               │                     │    ├── OrientationCorrector (shares EasyOCR)     │
               │                     │    ├── PDFConverter (CPU)                         │
-              │                     │    └── VLLMClient (HTTP) ──► vLLM (port 8000)    │
-              │                     │                               GPU ~16GB          │
-              │                     │                               Qwen2.5-VL-7B      │
-              │                     │                               continuous batching │
+              │                     │    └── VLLMEmbeddedClient (in-process vLLM)      │
+              │                     │         Qwen2.5-VL-3B — GPU ~10-16GB             │
+              │                     │         PIL images passed directly (zero-copy)    │
+              │                     │         continuous batching + PagedAttention      │
               │                     └─────────────────────────────────────────────────┘
               │
               ├──► worker_docid.py × N (stateless, no GPU)
@@ -66,28 +66,53 @@ Client ─► api.py ─► Redis queue ──► │  inference_server.py (port
                      └── Delegates all inference to inference_server via Redis
 ```
 
+### VLM Backend: vLLM Embedded (production)
+
+The key architectural decision is running vLLM **in-process** inside the inference server (not as a separate HTTP container). This eliminates the base64 encoding (~300-500KB per image) and HTTP serialization overhead that bottlenecked throughput at high concurrency.
+
+```
+  ANTES (vLLM HTTP):                     AGORA (vLLM Embedded):
+  inference_server                       inference_server
+    │                                      │
+    ├── PIL → base64 (300KB)               ├── PIL image ──────┐
+    ├── HTTP POST to vLLM container        │   (zero-copy)     │
+    ├── vLLM decodes base64                │                   ▼
+    ├── vLLM generates                     ├── vllm.LLM.generate()
+    └── HTTP response back                 │   (in-process, same GPU)
+                                           └── text output directly
+  Overhead: ~100-300ms per request         Overhead: ~0ms
+```
+
+The `VLLMEmbeddedClient` (`doc_pipeline/extractors/vllm_embedded.py`) uses vLLM's offline `LLM` class to pass PIL images directly via `multi_modal_data`, bypassing all serialization.
+
+**Priority order**: `VLLM_EMBEDDED=true` (production) > `VLLM_ENABLED=true` (HTTP, legacy) > HuggingFace (dev/testing)
+
 ### Request Flow (full /process pipeline)
 
 1. **Client** sends image/PDF to `api.py` via REST (`POST /process`)
 2. **API** saves file to shared volume (`/tmp/doc-pipeline/`), creates job in Redis queue `queue:doc:documents`
 3. **Worker DocID** picks up the job (BRPOP), sends inference request to `queue:doc:inference` via Redis LPUSH
-4. **Inference Server** collects requests from `queue:doc:inference`:
-   - Loads image from shared volume
+4. **Inference Server** collects requests from `queue:doc:inference` (batch_size=16, pipeline overlap):
+   - Preprocesses all images **concurrently** (parallel I/O + orientation + classification)
    - Corrects orientation (EasyOCR textbox detection, 90/270 degree rotation)
-   - Classifies document type (EfficientNet, ~200ms)
-   - Sends image + prompt to **vLLM** via HTTP (`/v1/chat/completions`, OpenAI-compatible API)
-   - **vLLM** processes with continuous batching + PagedAttention (tokens interleaved across requests)
+   - Classifies document type (EfficientNet, ~100ms)
+   - Passes PIL images **directly** to in-process vLLM via `llm.generate(multi_modal_data={"image": pil_image})`
+   - vLLM processes with continuous batching + PagedAttention (tokens interleaved across requests)
    - Parses VLM JSON response, validates CPF (hybrid mode: cross-validates with EasyOCR)
    - Publishes result to Redis key `inference:result:{id}`
+   - **Pipeline overlap**: while VLM generates for batch N, already collects batch N+1 from Redis
 5. **Worker** polls the reply key, builds final response, publishes to job result key
 6. **API** returns result to client (sync mode) or POSTs to webhook (async mode)
 
 ### Key Design Decisions
 
-- **Workers are stateless and GPU-free**: all GPU work is centralized in the inference server + vLLM. Workers can scale horizontally on CPU-only nodes.
+- **vLLM in-process (embedded)**: eliminates HTTP+base64 overhead that dominated latency at high concurrency. PIL images go directly to the GPU. On H200, this improved throughput by 64% vs vLLM HTTP and 20% vs HuggingFace at c=20+.
+- **Pipeline overlap**: while the VLM generates text for batch N (in a thread pool), the event loop concurrently collects batch N+1 from Redis, eliminating inter-batch idle time.
+- **Parallel preprocessing**: all images in a batch are loaded, oriented, and classified concurrently via `asyncio.gather` instead of sequentially.
+- **Workers are stateless and GPU-free**: all GPU work is centralized in the inference server. Workers can scale horizontally on CPU-only nodes.
 - **File passing via shared volume**: images are written to `/tmp/doc-pipeline/` (Docker named volume `temp-images`) and referenced by path through Redis, avoiding large payloads in the queue.
 - **Redis as message bus**: all inter-service communication goes through Redis (queues + reply keys). No direct HTTP between workers and inference server.
-- **VLM backend is swappable**: `DOC_PIPELINE_VLLM_ENABLED=true` uses vLLM (production); `false` falls back to local HuggingFace transformers (dev/testing).
+- **VLM backend is swappable**: `VLLM_EMBEDDED=true` (production), `VLLM_ENABLED=true` (HTTP fallback), or HuggingFace (dev).
 
 **Entry points**: `cli.py`, `api.py`, `worker_docid.py`, `worker_ocr.py`, `inference_server.py`
 
@@ -108,7 +133,8 @@ doc_pipeline/
 ├── extractors/
 │   ├── base.py              # BaseExtractor ABC — extend with extract_rg/extract_cnh/extract_cin
 │   ├── qwen_vl.py           # QwenVLExtractor (HuggingFace transformers, fallback when vLLM disabled)
-│   ├── vllm_client.py       # VLLMClient — async HTTP client for vLLM OpenAI API (production)
+│   ├── vllm_embedded.py     # VLLMEmbeddedClient — in-process vLLM (production, zero HTTP overhead)
+│   ├── vllm_client.py       # VLLMClient — async HTTP client for vLLM OpenAI API (legacy fallback)
 │   ├── easyocr.py           # EasyOCRExtractor (~2GB VRAM, OCR + regex)
 │   └── hybrid.py            # HybridExtractor — EasyOCR + VLM with CPF validation fallback
 ├── preprocessing/
@@ -194,8 +220,8 @@ docker compose build && docker compose up -d
 |-----------|-------|-----|-------------|
 | **redis** | redis:7-alpine | No | Message broker + result store (AOF persistence) |
 | **api** | Dockerfile.api | No | FastAPI REST API, rate limiting, job enqueuing |
-| **vllm** | vllm/vllm-openai:latest | Yes (~16-20GB) | vLLM server (Qwen2.5-VL-7B), continuous batching, PagedAttention |
-| **inference-server** | Dockerfile.inference-server | Yes (~3-4GB) | EfficientNet + EasyOCR + VLM proxy, batched request processing |
+| **inference-server** | Dockerfile.inference-server | Yes (~14-20GB) | EfficientNet + EasyOCR + **vLLM in-process** (Qwen2.5-VL-3B), pipeline overlap |
+| **vllm** *(optional)* | vllm/vllm-openai:latest | Yes (~16-20GB) | vLLM HTTP server (legacy, only if `VLLM_EMBEDDED=false` + `VLLM_ENABLED=true`) |
 | **worker-docid-1..5** | Dockerfile.worker (python:3.11-slim) | No | Stateless job consumers, no ML models |
 | **worker-ocr** | Dockerfile.worker (python:3.11-slim) | No | Stateless OCR job consumer, no ML models |
 
@@ -213,15 +239,16 @@ docker compose build && docker compose up -d
 The inference server (`inference_server.py`) centralizes all GPU models and processes requests from workers:
 
 1. Workers LPUSH requests to `queue:doc:inference`
-2. Server collects up to `INFERENCE_BATCH_SIZE` (default 4) or waits `INFERENCE_BATCH_TIMEOUT_MS` (default 100ms)
-3. For each request: orientation correction (EasyOCR) → classification (EfficientNet) → VLM extraction
-4. VLM backend is configurable:
-   - **vLLM** (`VLLM_ENABLED=true`): async HTTP to vLLM container (`/v1/chat/completions`, OpenAI-compatible)
-   - **HuggingFace** (`VLLM_ENABLED=false`): local Qwen2.5-VL via transformers (fallback/dev)
-5. Publishes replies to individual Redis keys (`inference:result:{id}`)
-6. Workers poll their reply key
+2. Server collects up to `INFERENCE_BATCH_SIZE` (default 16) or waits `INFERENCE_BATCH_TIMEOUT_MS` (default 100ms)
+3. **Parallel preprocessing**: all images in the batch are loaded, oriented (EasyOCR), and classified (EfficientNet) concurrently via `asyncio.gather`
+4. **VLM extraction** via in-process vLLM: PIL images passed directly to `vllm.LLM.generate()` with `multi_modal_data` — no base64, no HTTP
+5. **Pipeline overlap**: while VLM generates for batch N, the event loop concurrently collects batch N+1 from Redis
+6. Publishes replies to individual Redis keys (`inference:result:{id}`)
+7. Workers poll their reply key
 
-Config: `INFERENCE_BATCH_SIZE=4`, `WORKER_CONCURRENT_JOBS=4`, `INFERENCE_TIMEOUT=120s`
+VLM backend priority: `VLLM_EMBEDDED=true` (production) > `VLLM_ENABLED=true` (HTTP) > HuggingFace (dev)
+
+Config: `INFERENCE_BATCH_SIZE=16`, `WORKER_CONCURRENT_JOBS=4`, `INFERENCE_TIMEOUT=120s`
 
 ## Configuration
 
@@ -236,11 +263,14 @@ All settings prefixed with `DOC_PIPELINE_` (see `doc_pipeline/config.py`):
 | `INFERENCE_BATCH_SIZE` | 4 | Max requests per VLM batch |
 | `INFERENCE_BATCH_TIMEOUT_MS` | 100 | Max wait to fill a batch (ms) |
 | `WORKER_CONCURRENT_JOBS` | 4 | Parallel jobs per worker |
-| `VLLM_ENABLED` | false | Use external vLLM server for VLM inference |
-| `VLLM_BASE_URL` | http://vllm:8000/v1 | vLLM OpenAI-compatible API base URL |
+| `VLLM_EMBEDDED` | false | **Production mode**: run vLLM in-process (no HTTP/base64 overhead) |
+| `VLLM_ENABLED` | false | Use external vLLM HTTP server (legacy, used when EMBEDDED=false) |
+| `VLLM_GPU_MEMORY_UTILIZATION` | 0.40 | Fraction of GPU memory for vLLM KV cache (0.1-0.95) |
+| `VLLM_MAX_MODEL_LEN` | 4096 | Maximum context length for vLLM |
+| `VLLM_BASE_URL` | http://vllm:9030/v1 | vLLM HTTP API base URL (only when EMBEDDED=false) |
 | `VLLM_MODEL` | Qwen/Qwen2.5-VL-3B-Instruct | Model name served by vLLM |
 | `VLLM_MAX_TOKENS` | 1024 | Max tokens for VLM generation |
-| `VLLM_TIMEOUT` | 60.0 | HTTP timeout for vLLM requests (seconds) |
+| `VLLM_TIMEOUT` | 60.0 | HTTP timeout for vLLM requests (seconds, only HTTP mode) |
 
 ## Document Types
 
@@ -299,18 +329,21 @@ Each service uses a unique `server_name` in `sentry_sdk.init()` so errors in Gli
 
 ## GPU / VRAM Requirements
 
-With vLLM (default, production):
-- **vLLM container**: ~16-20GB VRAM (Qwen2.5-VL-7B + KV cache, depends on `gpu-memory-utilization`)
-- **Inference server**: ~3-4GB VRAM (EfficientNet ~200MB + EasyOCR ~2-4GB)
+With vLLM embedded (default, production — `VLLM_EMBEDDED=true`):
+- **Inference server**: ~14-20GB VRAM (EfficientNet ~200MB + EasyOCR ~2-4GB + vLLM in-process ~10-16GB)
 - **Workers**: 0 GB VRAM (stateless, CPU-only)
-- **Total**: ~20-24GB minimum (single GPU)
+- **Total**: ~14-20GB minimum (single GPU, single process)
 
-Without vLLM (HuggingFace fallback, set `VLLM_ENABLED=false`):
-- **Inference server**: ~20-24GB VRAM (classifier + EasyOCR + Qwen2.5-VL-7B via transformers)
-- **Workers**: 0 GB VRAM
+With vLLM HTTP (legacy — `VLLM_ENABLED=true`):
+- **vLLM container**: ~16-20GB VRAM (Qwen2.5-VL + KV cache, depends on `gpu-memory-utilization`)
+- **Inference server**: ~3-4GB VRAM (EfficientNet ~200MB + EasyOCR ~2-4GB)
+- **Total**: ~20-24GB minimum (two processes sharing GPU)
+
+Without vLLM (HuggingFace fallback, set both `VLLM_EMBEDDED=false` and `VLLM_ENABLED=false`):
+- **Inference server**: ~20-24GB VRAM (classifier + EasyOCR + Qwen2.5-VL via transformers)
 - **Total**: ~20-24GB minimum
 
-Production: H200 (144GB) shared with ASR services.
+Production: H200 (144GB) with `gpu-memory-utilization=0.40`, shared with ASR services.
 
 ## Technology Stack and Infrastructure Dependencies
 

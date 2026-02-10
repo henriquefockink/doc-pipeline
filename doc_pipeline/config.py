@@ -228,6 +228,23 @@ class Settings(BaseSettings):
         description="Timeout in seconds for vLLM requests",
     )
 
+    # vLLM embedded settings (in-process, zero HTTP overhead)
+    vllm_embedded: bool = Field(
+        default=False,
+        description="Use in-process vLLM (no HTTP/base64 overhead). Takes priority over vllm_enabled.",
+    )
+    vllm_gpu_memory_utilization: float = Field(
+        default=0.40,
+        ge=0.1,
+        le=0.95,
+        description="Fraction of GPU memory for vLLM KV cache (used by both embedded and HTTP modes)",
+    )
+    vllm_max_model_len: int = Field(
+        default=4096,
+        ge=512,
+        description="Maximum model context length for vLLM",
+    )
+
     # Worker concurrency settings
     worker_concurrent_jobs: int = Field(
         default=1,

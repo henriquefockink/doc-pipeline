@@ -75,13 +75,14 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 │ INFERENCE SERVER (inference_server.py) — Port 9020 — GPU ~3-4GB             │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│ BATCHING:                                                                   │
+│ BATCHING + PIPELINE OVERLAP:                                                │
 │ 1. BRPOP primeiro request de queue:doc:inference                            │
 │ 2. Coleta mais requests (RPOP não-bloqueante) até:                          │
-│    • INFERENCE_BATCH_SIZE (default 4) ou                                    │
+│    • INFERENCE_BATCH_SIZE (default 16) ou                                   │
 │    • INFERENCE_BATCH_TIMEOUT_MS (default 100ms)                             │
+│ 3. Enquanto batch N processa, coleta batch N+1 concorrentemente             │
 │                                                                             │
-│ Para cada request no batch:                                                 │
+│ Para cada request no batch (PROCESSADOS EM PARALELO via asyncio.gather):                                                 │
 │                                                                             │
 │ ORIENTAÇÃO (EasyOCR textbox detection):                                     │
 │ ┌───────────────────────────────────────────────────────────────────────┐   │
@@ -105,43 +106,41 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 5. Inference Server — Extração VLM (via vLLM)
+### 5. Inference Server — Extração VLM (vLLM Embedded)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ INFERENCE SERVER → vLLM (extração de dados)                                 │
+│ INFERENCE SERVER — vLLM IN-PROCESS (extração de dados)                      │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
-│ 1. Monta prompt baseado no doc_type (RG/CNH/CIN)                           │
-│ 2. Encoda imagem como base64 JPEG                                           │
-│ 3. Envia via HTTP para vLLM:                                                │
+│ 1. Monta prompt Qwen2.5-VL chat template com image placeholder             │
+│ 2. Passa imagem PIL DIRETAMENTE para vLLM (zero-copy, sem base64)          │
+│ 3. Chama vLLM in-process:                                                   │
 │                                                                             │
-│    POST http://vllm:8000/v1/chat/completions                                │
-│    {                                                                        │
-│      "model": "Qwen/Qwen2.5-VL-3B-Instruct",                               │
-│      "messages": [{                                                         │
-│        "role": "user",                                                      │
-│        "content": [                                                         │
-│          {"type": "image_url",                                              │
-│           "image_url": {"url": "data:image/jpeg;base64,{b64}"}},           │
-│          {"type": "text", "text": "Extraia os campos deste RG..."}         │
-│        ]                                                                    │
-│      }],                                                                    │
-│      "max_tokens": 1024,                                                    │
-│      "temperature": 0.0                                                     │
-│    }                                                                        │
+│    llm.generate(                                                            │
+│      {                                                                      │
+│        "prompt": "<|im_start|>user\n<|vision_start|>...",                   │
+│        "multi_modal_data": {"image": pil_image}  ← PIL direto!             │
+│      },                                                                     │
+│      sampling_params=SamplingParams(temperature=0.0, max_tokens=1024)       │
+│    )                                                                        │
 │                                                                             │
 │ ┌───────────────────────────────────────────────────────────────────────┐   │
-│ │ vLLM CONTAINER (port 8000) — GPU ~8-10GB                              │   │
+│ │ vLLM EMBEDDED (mesmo processo, mesma GPU)                             │   │
 │ │                                                                       │   │
 │ │ • Qwen2.5-VL-3B-Instruct (3B params, vision-language model)           │   │
-│ │ • API compatível com OpenAI (drop-in replacement)                     │   │
+│ │ • Roda DENTRO do inference server (sem container separado)            │   │
+│ │ • Imagem PIL vai direto para o GPU (sem base64, sem HTTP)             │   │
 │ │ • Continuous batching: tokens intercalados entre requests              │   │
-│ │   (não espera terminar um antes de começar outro)                     │   │
 │ │ • PagedAttention: KV cache fragmentado em páginas na VRAM             │   │
 │ │ • CUDA graphs + FlashAttention para kernel otimizado                  │   │
 │ │ • gpu-memory-utilization: controla % da VRAM para KV cache            │   │
-│ │   (0.30 = dev/restrito, 0.90 = produção/máximo throughput)            │   │
+│ │   (0.40 = produção com MPS, 0.90 = GPU dedicada)                     │   │
+│ │                                                                       │   │
+│ │ vs vLLM HTTP (modo antigo):                                           │   │
+│ │   HTTP: PIL → base64 (300KB) → HTTP POST → decode → GPU → HTTP resp  │   │
+│ │   Embedded: PIL ─────────────────────────────► GPU → texto direto     │   │
+│ │   Ganho: +64% throughput em alta concorrência (H200 benchmarks)       │   │
 │ │                                                                       │   │
 │ │ Resposta:                                                             │   │
 │ │ { "nome": "JOAO DA SILVA", "cpf": "123.456.789-00", ... }            │   │
@@ -150,10 +149,14 @@ Este documento detalha o fluxo completo de processamento quando um documento é 
 │ 4. Parseia JSON da resposta do VLM                                          │
 │ 5. SET resultado em inference:result:{id} no Redis                          │
 │                                                                             │
-│ FALLBACK (se VLLM_ENABLED=false):                                           │
-│ • Usa Qwen2.5-VL-3B local via HuggingFace transformers                     │
-│ • Static batching (forward pass com batch fixo)                             │
-│ • Mesma interface, apenas backend diferente                                 │
+│ PIPELINE OVERLAP:                                                           │
+│ • Enquanto VLM processa batch N, já coleta batch N+1 do Redis              │
+│ • Preprocessing paralelo: asyncio.gather para I/O + orientação + classify  │
+│ • Elimina tempo ocioso entre batches                                        │
+│                                                                             │
+│ FALLBACKS:                                                                  │
+│ • VLLM_ENABLED=true: vLLM via HTTP (container separado, port 9030)         │
+│ • Ambos false: Qwen2.5-VL local via HuggingFace transformers (dev)         │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -347,20 +350,30 @@ Imagem ──► Inference Server:
 
 ---
 
-## Tempos de Execução (com vLLM, single request)
+## Tempos de Execução (vLLM Embedded, H200, single request)
 
 | Etapa | Tempo |
 |-------|-------|
 | Upload + decode imagem | ~50ms |
 | Correção de orientação (EasyOCR textbox) | ~200ms |
 | Classificação (EfficientNet) | ~100ms |
-| Extração VLM (vLLM, single request) | ~2.4s |
+| Extração VLM (vLLM embedded, single request) | ~1.5s |
 | Validação CPF + fallback (hybrid) | ~50ms |
-| **Total (hybrid, single request)** | **~2.8s** |
-| **Total (vlm only, single request)** | **~2.7s** |
+| **Total (hybrid, single request)** | **~1.9s** |
+| **Total (vlm only, single request)** | **~1.8s** |
 
-Com continuous batching (vLLM), throughput: ~0.6 rps (com `gpu-memory-utilization=0.30`).
-Em produção com `gpu-memory-utilization=0.90`, throughput significativamente maior.
+Throughput em produção (H200, `gpu-memory-utilization=0.40`):
+- Single (c=1): 0.52 rps, P50 = 1.8s
+- Alta concorrência (c=20): **1.38 rps**, P50 = 14.2s
+- Stress (c=30): **1.38 rps**, P50 = 17.8s
+
+Comparação com backends anteriores (H200):
+
+| Backend | P50 (c=1) | P50 (c=20) | RPS (c=20) |
+|---------|-----------|------------|------------|
+| HuggingFace (static batch) | 4.8s | 13.9s | 1.11 |
+| vLLM HTTP (container separado) | 2.4s | 24.9s | 0.60 |
+| **vLLM Embedded (in-process)** | **1.8s** | **14.2s** | **1.38** |
 
 ---
 
@@ -451,12 +464,16 @@ Request ──► API Key configurada? ──► NÃO ──► Acesso liberado
 │            │  GPU ~3-4GB                 │    (via Redis)                     │
 │            │  EfficientNet (~200MB)      │                                    │
 │            │  EasyOCR (~2-4GB)           │    ┌────────────────────┐          │
-│            │  VLLMClient ────────────────┼───►│  vLLM :8000        │          │
-│            │  (HTTP async)               │    │  GPU ~8-10GB       │          │
-│            └─────────────────────────────┘    │  Qwen2.5-VL-3B    │          │
-│                                               │  Continuous Batch  │          │
-│            Volume: temp-images                │  PagedAttention    │          │
-│            (/tmp/doc-pipeline)                └────────────────────┘          │
+│            │  VLLMEmbeddedClient         │                                    │
+│            │  (in-process, zero-copy)    │                                    │
+│            │  vLLM LLM class             │                                    │
+│            │  Qwen2.5-VL-3B (~10-16GB)   │                                    │
+│            │  Continuous Batching         │                                    │
+│            │  PagedAttention              │                                    │
+│            └─────────────────────────────┘                                    │
+│                                                                             │
+│            Volume: temp-images                                              │
+│            (/tmp/doc-pipeline)                                              │
 │            Compartilhado: API, Workers,                                      │
 │            Inference Server                                                  │
 │                                                                             │

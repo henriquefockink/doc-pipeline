@@ -2,10 +2,10 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes
+    command: redis-server --appendonly yes --protected-mode no --rename-command SLAVEOF "" --rename-command REPLICAOF "" --rename-command DEBUG ""
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -122,6 +122,10 @@ services:
       - DOC_PIPELINE_VLLM_MODEL=${DOC_PIPELINE_VLLM_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}
       - DOC_PIPELINE_VLLM_MAX_TOKENS=${DOC_PIPELINE_VLLM_MAX_TOKENS:-1024}
       - DOC_PIPELINE_VLLM_TIMEOUT=${DOC_PIPELINE_VLLM_TIMEOUT:-60.0}
+      # vLLM embedded (in-process, no HTTP/base64 overhead)
+      - DOC_PIPELINE_VLLM_EMBEDDED=${DOC_PIPELINE_VLLM_EMBEDDED:-false}
+      - DOC_PIPELINE_VLLM_GPU_MEMORY_UTILIZATION=${DOC_PIPELINE_VLLM_GPU_MEMORY_UTILIZATION:-0.40}
+      - DOC_PIPELINE_VLLM_MAX_MODEL_LEN=${DOC_PIPELINE_VLLM_MAX_MODEL_LEN:-4096}
     volumes:
       - temp-images:/tmp/doc-pipeline
       - model-cache:/root/.cache/huggingface

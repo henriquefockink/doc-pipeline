@@ -40,6 +40,7 @@ from doc_pipeline.classifier.adapter import ClassifierAdapter
 from doc_pipeline.config import get_settings
 from doc_pipeline.extractors.qwen_vl import QwenVLExtractor
 from doc_pipeline.extractors.vllm_client import VLLMClient
+from doc_pipeline.extractors.vllm_embedded import VLLMEmbeddedClient
 from doc_pipeline.observability import get_logger, setup_logging
 from doc_pipeline.ocr import OCREngine
 from doc_pipeline.ocr.converter import PDFConverter, is_pdf
@@ -99,6 +100,7 @@ class InferenceServer:
         self.queue: QueueService = get_queue_service()
         self.extractor: QwenVLExtractor | None = None
         self.vllm_client: VLLMClient | None = None
+        self.vllm_embedded: VLLMEmbeddedClient | None = None
         self.classifier: ClassifierAdapter | None = None
         self.ocr_engine: OCREngine | None = None
         self.orientation_corrector: OrientationCorrector | None = None
@@ -152,8 +154,28 @@ class InferenceServer:
         self.pdf_converter = PDFConverter(dpi=200)
         logger.info("pdf_converter_loaded")
 
-        # Load VLM backend: vLLM (external) or HuggingFace (local)
-        if settings.vllm_enabled:
+        # Load VLM backend: vLLM embedded (in-process) > vLLM HTTP > HuggingFace
+        if settings.vllm_embedded:
+            logger.info(
+                "loading_vllm_embedded",
+                model=settings.vllm_model,
+                gpu_memory_utilization=settings.vllm_gpu_memory_utilization,
+                max_model_len=settings.vllm_max_model_len,
+            )
+            self.vllm_embedded = VLLMEmbeddedClient(
+                model=settings.vllm_model,
+                gpu_memory_utilization=settings.vllm_gpu_memory_utilization,
+                max_model_len=settings.vllm_max_model_len,
+                max_tokens=settings.vllm_max_tokens,
+                max_num_seqs=self._batch_size,
+            )
+            await self._run_sync(self.vllm_embedded.start)
+            # vLLM spawns a subprocess (multiprocessing.spawn) which can corrupt
+            # the existing Redis connection's file descriptors. Reconnect Redis.
+            await self.queue.close()
+            await self.queue.connect()
+            logger.info("vllm_embedded_loaded")
+        elif settings.vllm_enabled:
             logger.info(
                 "loading_vllm_client",
                 base_url=settings.vllm_base_url,
@@ -201,6 +223,9 @@ class InferenceServer:
         logger.info("inference_server_stopping")
         self._running = False
 
+        if self.vllm_embedded:
+            await self._run_sync(self.vllm_embedded.stop)
+
         if self.vllm_client:
             await self.vllm_client.stop()
 
@@ -238,47 +263,98 @@ class InferenceServer:
 
         return batch
 
+    async def _reconnect_redis(self) -> None:
+        """Force Redis reconnection (e.g. after vLLM subprocess corrupts FDs)."""
+        logger.info("redis_reconnecting")
+        with contextlib.suppress(Exception):
+            await self.queue.close()
+        await self.queue.connect()
+        logger.info("redis_reconnected")
+
     async def run(self) -> None:
-        """Main server loop - consume batches from inference queue."""
+        """Main server loop with pipeline overlap.
+
+        While batch N is being processed (VLM in thread pool), the event loop
+        is free to collect batch N+1 from Redis concurrently.  This eliminates
+        the inter-batch gap where the GPU was idle waiting for collection.
+        """
+        _prefetched: list[dict] | None = None
+
         while self._running:
             try:
                 depth = await self.queue.redis.llen(QueueName.INFERENCE)
                 inference_metrics_queue_depth.set(depth)
 
-                batch = await self._collect_batch()
+                # Use prefetched batch or collect a new one
+                if _prefetched is not None:
+                    batch = _prefetched
+                    _prefetched = None
+                else:
+                    batch = await self._collect_batch()
+
                 if not batch:
                     continue
 
                 self._current_batch_size = len(batch)
-                await self._process_batch_smart(batch)
+
+                # Process current batch + prefetch next batch concurrently.
+                # _process_batch_smart spends most of its time in _run_sync
+                # (thread pool), so the event loop is free to run _collect_batch
+                # (async Redis brpop) at the same time.
+                process_task = asyncio.create_task(self._process_batch_smart(batch))
+                collect_task = asyncio.create_task(self._collect_batch())
+
+                # Wait for processing to finish (must complete before next VLM call)
+                await process_task
                 self._current_batch_size = 0
+
+                # Check if collection finished too (non-blocking)
+                if collect_task.done():
+                    _prefetched = collect_task.result()
+                else:
+                    # Collection still waiting on brpop — cancel and
+                    # let the next iteration do a fresh collect
+                    collect_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await collect_task
 
             except asyncio.CancelledError:
                 logger.info("inference_server_cancelled")
                 break
             except Exception as e:
+                error_type = type(e).__name__
                 logger.error(
                     "inference_loop_error",
                     error=str(e),
-                    error_type=type(e).__name__,
+                    error_type=error_type,
                 )
                 self._current_batch_size = 0
+                _prefetched = None
+                # Redis connection corrupted (e.g. by vLLM subprocess spawn) — reconnect
+                if error_type in ("ReadOnlyError", "ResponseError", "ConnectionError"):
+                    await self._reconnect_redis()
                 await asyncio.sleep(1.0)
 
     async def _vlm_generate(self, image: Image.Image, prompt: str) -> str:
-        """Generate VLM response via vLLM or local HuggingFace."""
+        """Generate VLM response via vLLM embedded, vLLM HTTP, or local HuggingFace."""
+        if self.vllm_embedded:
+            return await self._run_sync(self.vllm_embedded.generate, image, prompt)
         if self.vllm_client:
             return await self.vllm_client.generate(image, prompt)
         return await self._run_sync(self.extractor._generate, image, prompt)
 
     async def _vlm_generate_batch(self, images: list[Image.Image], prompts: list[str]) -> list[str]:
-        """Generate VLM responses for a batch via vLLM or local HuggingFace."""
+        """Generate VLM responses for a batch via vLLM embedded, vLLM HTTP, or HuggingFace."""
+        if self.vllm_embedded:
+            return await self._run_sync(self.vllm_embedded.generate_batch, images, prompts)
         if self.vllm_client:
             return await self.vllm_client.generate_batch(images, prompts)
         return await self._run_sync(self.extractor._generate_batch, images, prompts)
 
     def _parse_vlm_json(self, text: str) -> dict:
         """Parse JSON from VLM response using the appropriate parser."""
+        if self.vllm_embedded:
+            return VLLMEmbeddedClient.parse_json(text)
         if self.vllm_client:
             return VLLMClient.parse_json(text)
         return self.extractor._parse_json(text)
@@ -678,52 +754,55 @@ class InferenceServer:
 
         inference_metrics_batch_size.observe(batch_size)
 
-        # Phase 1: Preprocess each request (load image, orient, classify if process)
+        # Phase 1: Preprocess ALL requests concurrently (parallel I/O + orientation + classify)
         preprocessed = []  # (index, image, doc_type, classification_dict_or_None, skip_reason)
         errors = {}
 
-        for i, req in enumerate(batch):
-            try:
-                operation = req.get("operation", "extract")
+        async def _preprocess_one(i: int, req: dict):
+            """Preprocess a single request concurrently."""
+            operation = req.get("operation", "extract")
+            auto_rotate = req.get("auto_rotate", True)
+            image, correction_info = await self._run_sync(
+                self._preprocess_image_sync, req["image_path"], auto_rotate
+            )
 
-                # Load image + orientation correction (blocking)
-                auto_rotate = req.get("auto_rotate", True)
-                image, correction_info = await self._run_sync(
-                    self._preprocess_image_sync, req["image_path"], auto_rotate
-                )
+            if operation == "process":
+                do_extract = req.get("extract", True)
+                min_confidence = req.get("min_confidence") or settings.min_confidence
 
-                if operation == "process":
-                    do_extract = req.get("extract", True)
-                    min_confidence = req.get("min_confidence") or settings.min_confidence
+                classification = await self._run_sync(self.classifier.classify, image)
+                classification_dict = classification.model_dump()
 
-                    classification = await self._run_sync(self.classifier.classify, image)
-                    classification_dict = classification.model_dump()
+                if not do_extract or classification.confidence < min_confidence:
+                    skip_result = {
+                        "file_path": None,
+                        "classification": classification_dict,
+                        "extraction": None,
+                        "image_correction": correction_info,
+                        "success": not do_extract
+                        or classification.confidence >= min_confidence,
+                        "error": None
+                        if not do_extract
+                        else f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
+                    }
+                    return (i, None, None, skip_result, correction_info)
 
-                    if not do_extract or classification.confidence < min_confidence:
-                        # No VLM needed — send reply directly
-                        skip_result = {
-                            "file_path": None,
-                            "classification": classification_dict,
-                            "extraction": None,
-                            "image_correction": correction_info,
-                            "success": not do_extract
-                            or classification.confidence >= min_confidence,
-                            "error": None
-                            if not do_extract
-                            else f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
-                        }
-                        preprocessed.append((i, None, None, skip_result, correction_info))
-                        continue
+                doc_type = classification.document_type.value
+                return (i, image, doc_type, classification_dict, correction_info)
+            else:
+                doc_type = req["document_type"]
+                return (i, image, doc_type, None, correction_info)
 
-                    doc_type = classification.document_type.value
-                    preprocessed.append((i, image, doc_type, classification_dict, correction_info))
-                else:
-                    # extract operation
-                    doc_type = req["document_type"]
-                    preprocessed.append((i, image, doc_type, None, correction_info))
+        results = await asyncio.gather(
+            *[_preprocess_one(i, req) for i, req in enumerate(batch)],
+            return_exceptions=True,
+        )
 
-            except Exception as e:
-                errors[i] = str(e)
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                errors[i] = str(result)
+            else:
+                preprocessed.append(result)
 
         # Phase 2: Collect VLM-eligible items for batch inference
         vlm_items = []  # (preprocessed_index, image, prompt)
@@ -934,10 +1013,14 @@ async def health():
 
     queue_depth = await server.queue.redis.llen(QueueName.INFERENCE)
 
-    vlm_backend = "vllm" if server.vllm_client else "huggingface"
-    if server.vllm_client:
+    if server.vllm_embedded:
+        vlm_backend = "vllm-embedded"
+        vlm_ready = server.vllm_embedded.is_loaded
+    elif server.vllm_client:
+        vlm_backend = "vllm"
         vlm_ready = await server.vllm_client.health_check()
     else:
+        vlm_backend = "huggingface"
         vlm_ready = server.extractor is not None and server.extractor.is_loaded
 
     return {
