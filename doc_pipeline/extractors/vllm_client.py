@@ -1,15 +1,16 @@
 """
-Client HTTP async para vLLM OpenAI-compatible API.
+Async HTTP client for vLLM OpenAI-compatible API.
 
-Envia requests VLM para um servidor vLLM externo com continuous batching.
-O vLLM faz o batching internamente — este client dispara N requests em paralelo.
+This client is for use via CLI or when running vLLM as a separate HTTP server.
+Production uses `VLLMEmbeddedClient` via `inference_server.py` (in-process, zero overhead).
+
+Sends VLM requests to an external vLLM server with continuous batching.
+vLLM handles batching internally — this client fires N requests in parallel.
 """
 
 import asyncio
 import base64
 import io
-import json
-import re
 
 import httpx
 from PIL import Image
@@ -145,15 +146,6 @@ class VLLMClient:
     @staticmethod
     def parse_json(text: str) -> dict:
         """Extract and parse JSON from VLM response text."""
-        json_match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-        if json_match:
-            text = json_match.group(1)
+        from .vlm_utils import parse_vlm_json
 
-        json_match = re.search(r"\{[\s\S]*\}", text)
-        if json_match:
-            text = json_match.group(0)
-
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            return {}
+        return parse_vlm_json(text)

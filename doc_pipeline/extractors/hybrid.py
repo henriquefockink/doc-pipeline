@@ -1,10 +1,14 @@
 """
-Extractor híbrido: VLM primeiro, fallback para OCR se CPF inválido.
+Hybrid extractor: VLM first, OCR fallback for CPF validation.
 
-Estratégia:
-1. VLM (Qwen) extrai dados diretamente da imagem
-2. Valida CPF com algoritmo
-3. Se CPF inválido, tenta EasyOCR para extrair números
+This extractor is for use via CLI (`cli.py`) and local testing.
+Production uses `VLLMEmbeddedClient` via `inference_server.py` with
+hybrid CPF validation built into the inference server.
+
+Strategy:
+1. VLM (Qwen2.5-VL) extracts data directly from the image
+2. Validates CPF with checksum algorithm
+3. If CPF invalid, tries EasyOCR to extract numbers
 """
 
 import json
@@ -13,10 +17,13 @@ from pathlib import Path
 
 from PIL import Image
 
+from ..observability import get_logger
 from ..prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from ..schemas import CINData, CNHData, RGData
 from ..utils import fix_cpf_rg_swap, is_valid_cpf
 from .base import BaseExtractor
+
+logger = get_logger("hybrid_extractor")
 
 
 class HybridExtractor(BaseExtractor):
@@ -69,7 +76,7 @@ class HybridExtractor(BaseExtractor):
         import torch
         from transformers import AutoProcessor
 
-        print(f"[Hybrid] Carregando modelo {self.model_name}...")
+        logger.info("loading_model", model=self.model_name)
 
         ModelClass = self._get_model_class()
 
@@ -81,7 +88,7 @@ class HybridExtractor(BaseExtractor):
                 attn_implementation="flash_attention_2",
             )
         except Exception:
-            print("[Hybrid] Flash Attention 2 não disponível, usando SDPA...")
+            logger.info("flash_attention_unavailable_using_sdpa")
             self._model = ModelClass.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
@@ -90,7 +97,7 @@ class HybridExtractor(BaseExtractor):
             )
 
         self._processor = AutoProcessor.from_pretrained(self.model_name)
-        print(f"[Hybrid] Modelo carregado em {self.device}")
+        logger.info("model_loaded", device=self.device)
 
     def unload_model(self) -> None:
         """Descarrega o modelo."""
@@ -259,39 +266,38 @@ class HybridExtractor(BaseExtractor):
         """
         img = self._load_image(image)
 
-        # Step 1: VLM extrai dados vendo a imagem
-        print("[Hybrid] Step 1: VLM extraindo dados da imagem...")
+        # Step 1: VLM extracts data from the image
+        logger.info("vlm_extracting", doc_type="rg")
         response = self._generate_with_image(img, RG_EXTRACTION_PROMPT)
-        print(f"[Hybrid] VLM response:\n{response}\n")
+        logger.debug("vlm_response", response=response)
         data = self._parse_json(response)
 
         # Fix CPF/RG swap before validation
         data = fix_cpf_rg_swap(data)
 
-        # Step 2: Valida CPF
+        # Step 2: Validate CPF
         vlm_cpf = self._normalize_cpf(data.get("cpf"))
         cpf_valid = is_valid_cpf(vlm_cpf)
-        print(f"[Hybrid] VLM CPF: {vlm_cpf} (válido: {cpf_valid})")
+        logger.info("vlm_cpf_result", cpf=vlm_cpf, valid=cpf_valid)
 
-        # Step 3: Se CPF inválido, tenta OCR
+        # Step 3: If CPF invalid, try OCR
         if not cpf_valid:
-            print("[Hybrid] Step 3: CPF inválido, tentando OCR...")
+            logger.info("cpf_invalid_trying_ocr")
             ocr_text = self._extract_ocr_text(img)
-            print(f"[Hybrid] OCR text (primeiros 500 chars):\n{ocr_text[:500]}\n")
+            logger.debug("ocr_text", text=ocr_text[:500])
 
             ocr_cpf = self._extract_cpf_from_text(ocr_text)
             if ocr_cpf and is_valid_cpf(ocr_cpf):
-                print(f"[Hybrid] OCR encontrou CPF válido: {ocr_cpf}")
+                logger.info("ocr_cpf_found", cpf=ocr_cpf)
                 data["cpf"] = ocr_cpf
             elif ocr_cpf:
-                print(f"[Hybrid] OCR CPF também inválido: {ocr_cpf}")
-                # Usa o do VLM mesmo assim (pode ser útil para debug)
+                logger.info("ocr_cpf_also_invalid", cpf=ocr_cpf)
                 if vlm_cpf:
                     data["cpf"] = vlm_cpf
         else:
             data["cpf"] = vlm_cpf
 
-        print(f"[Hybrid] Final RG data: {data}")
+        logger.debug("final_rg_data", data=data)
 
         return RGData(
             nome=data.get("nome"),
@@ -316,41 +322,41 @@ class HybridExtractor(BaseExtractor):
         """
         img = self._load_image(image)
 
-        # Step 1: VLM extrai dados vendo a imagem
-        print("[Hybrid] Step 1: VLM extraindo dados da imagem...")
+        # Step 1: VLM extracts data from the image
+        logger.info("vlm_extracting", doc_type="cnh")
         response = self._generate_with_image(img, CNH_EXTRACTION_PROMPT)
-        print(f"[Hybrid] VLM response:\n{response}\n")
+        logger.debug("vlm_response", response=response)
         data = self._parse_json(response)
 
-        # Step 2: Valida CPF
+        # Step 2: Validate CPF
         vlm_cpf = self._normalize_cpf(data.get("cpf"))
         cpf_valid = is_valid_cpf(vlm_cpf)
-        print(f"[Hybrid] VLM CPF: {vlm_cpf} (válido: {cpf_valid})")
+        logger.info("vlm_cpf_result", cpf=vlm_cpf, valid=cpf_valid)
 
-        # Step 3: Se CPF inválido, tenta OCR
+        # Step 3: If CPF invalid, try OCR
         if not cpf_valid:
-            print("[Hybrid] Step 3: CPF inválido, tentando OCR...")
+            logger.info("cpf_invalid_trying_ocr")
             ocr_text = self._extract_ocr_text(img)
-            print(f"[Hybrid] OCR text (primeiros 500 chars):\n{ocr_text[:500]}\n")
+            logger.debug("ocr_text", text=ocr_text[:500])
 
             ocr_cpf = self._extract_cpf_from_text(ocr_text)
             if ocr_cpf and is_valid_cpf(ocr_cpf):
-                print(f"[Hybrid] OCR encontrou CPF válido: {ocr_cpf}")
+                logger.info("ocr_cpf_found", cpf=ocr_cpf)
                 data["cpf"] = ocr_cpf
             elif ocr_cpf:
-                print(f"[Hybrid] OCR CPF também inválido: {ocr_cpf}")
+                logger.info("ocr_cpf_also_invalid", cpf=ocr_cpf)
                 if vlm_cpf:
                     data["cpf"] = vlm_cpf
 
-            # Também tenta extrair registro via OCR
+            # Also try extracting registration number via OCR
             ocr_registro = self._extract_registro_from_text(ocr_text)
             if ocr_registro and not data.get("numero_registro"):
-                print(f"[Hybrid] OCR encontrou registro: {ocr_registro}")
+                logger.info("ocr_registro_found", registro=ocr_registro)
                 data["numero_registro"] = ocr_registro
         else:
             data["cpf"] = vlm_cpf
 
-        print(f"[Hybrid] Final CNH data: {data}")
+        logger.debug("final_cnh_data", data=data)
 
         return CNHData(
             nome=data.get("nome"),
@@ -376,38 +382,38 @@ class HybridExtractor(BaseExtractor):
         """
         img = self._load_image(image)
 
-        # Step 1: VLM extrai dados vendo a imagem
-        print("[Hybrid] Step 1: VLM extraindo dados da imagem (CIN)...")
+        # Step 1: VLM extracts data from the image
+        logger.info("vlm_extracting", doc_type="cin")
         response = self._generate_with_image(img, CIN_EXTRACTION_PROMPT)
-        print(f"[Hybrid] VLM response:\n{response}\n")
+        logger.debug("vlm_response", response=response)
         data = self._parse_json(response)
 
         # Fix CPF swap before validation
         data = fix_cpf_rg_swap(data)
 
-        # Step 2: Valida CPF
+        # Step 2: Validate CPF
         vlm_cpf = self._normalize_cpf(data.get("cpf"))
         cpf_valid = is_valid_cpf(vlm_cpf)
-        print(f"[Hybrid] VLM CPF: {vlm_cpf} (válido: {cpf_valid})")
+        logger.info("vlm_cpf_result", cpf=vlm_cpf, valid=cpf_valid)
 
-        # Step 3: Se CPF inválido, tenta OCR
+        # Step 3: If CPF invalid, try OCR
         if not cpf_valid:
-            print("[Hybrid] Step 3: CPF inválido, tentando OCR...")
+            logger.info("cpf_invalid_trying_ocr")
             ocr_text = self._extract_ocr_text(img)
-            print(f"[Hybrid] OCR text (primeiros 500 chars):\n{ocr_text[:500]}\n")
+            logger.debug("ocr_text", text=ocr_text[:500])
 
             ocr_cpf = self._extract_cpf_from_text(ocr_text)
             if ocr_cpf and is_valid_cpf(ocr_cpf):
-                print(f"[Hybrid] OCR encontrou CPF válido: {ocr_cpf}")
+                logger.info("ocr_cpf_found", cpf=ocr_cpf)
                 data["cpf"] = ocr_cpf
             elif ocr_cpf:
-                print(f"[Hybrid] OCR CPF também inválido: {ocr_cpf}")
+                logger.info("ocr_cpf_also_invalid", cpf=ocr_cpf)
                 if vlm_cpf:
                     data["cpf"] = vlm_cpf
         else:
             data["cpf"] = vlm_cpf
 
-        print(f"[Hybrid] Final CIN data: {data}")
+        logger.debug("final_cin_data", data=data)
 
         return CINData(
             nome=data.get("nome"),

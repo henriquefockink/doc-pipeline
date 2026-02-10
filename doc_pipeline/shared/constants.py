@@ -1,5 +1,8 @@
 """Constants for queue-based processing."""
 
+# VLM backend identifier used in extraction results
+VLM_BACKEND_NAME = "paneas_v3"
+
 
 class QueueName:
     """Redis queue names."""

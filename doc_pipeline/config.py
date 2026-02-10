@@ -106,11 +106,6 @@ class Settings(BaseSettings):
         le=1.0,
         description="Confiança mínima para classificação",
     )
-    warmup_on_start: bool = Field(
-        default=True,
-        description="Carregar modelos na inicialização (warmup)",
-    )
-
     # Logging settings
     log_level: str = Field(
         default="INFO",
@@ -194,9 +189,9 @@ class Settings(BaseSettings):
         description="Inference server health check port",
     )
     inference_batch_size: int = Field(
-        default=4,
+        default=16,
         ge=1,
-        le=16,
+        le=32,
         description="Max batch size for inference server (higher = more GPU throughput)",
     )
     inference_batch_timeout_ms: int = Field(
@@ -206,38 +201,24 @@ class Settings(BaseSettings):
         description="Max ms to wait for batch to fill before processing",
     )
 
-    # vLLM settings (external VLM server with continuous batching)
-    vllm_enabled: bool = Field(
-        default=False,
-        description="Use vLLM server for VLM inference instead of local HuggingFace model",
-    )
-    vllm_base_url: str = Field(
-        default="http://vllm:9030/v1",
-        description="vLLM OpenAI-compatible API base URL",
+    # vLLM settings (in-process embedded mode)
+    vllm_embedded: bool = Field(
+        default=True,
+        description="Use in-process vLLM (no HTTP/base64 overhead). Disable for dev/testing.",
     )
     vllm_model: str = Field(
         default="Qwen/Qwen2.5-VL-7B-Instruct",
-        description="Model name served by vLLM",
+        description="Model name for vLLM",
     )
     vllm_max_tokens: int = Field(
         default=1024,
         description="Max tokens for vLLM generation",
     )
-    vllm_timeout: float = Field(
-        default=60.0,
-        description="Timeout in seconds for vLLM requests",
-    )
-
-    # vLLM embedded settings (in-process, zero HTTP overhead)
-    vllm_embedded: bool = Field(
-        default=False,
-        description="Use in-process vLLM (no HTTP/base64 overhead). Takes priority over vllm_enabled.",
-    )
     vllm_gpu_memory_utilization: float = Field(
         default=0.40,
         ge=0.1,
         le=0.95,
-        description="Fraction of GPU memory for vLLM KV cache (used by both embedded and HTTP modes)",
+        description="Fraction of GPU memory for vLLM KV cache",
     )
     vllm_max_model_len: int = Field(
         default=4096,

@@ -38,8 +38,6 @@ from prometheus_client import (
 
 from doc_pipeline.classifier.adapter import ClassifierAdapter
 from doc_pipeline.config import get_settings
-from doc_pipeline.extractors.qwen_vl import QwenVLExtractor
-from doc_pipeline.extractors.vllm_client import VLLMClient
 from doc_pipeline.extractors.vllm_embedded import VLLMEmbeddedClient
 from doc_pipeline.observability import get_logger, setup_logging
 from doc_pipeline.ocr import OCREngine
@@ -47,7 +45,12 @@ from doc_pipeline.ocr.converter import PDFConverter, is_pdf
 from doc_pipeline.preprocessing import OrientationCorrector
 from doc_pipeline.prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from doc_pipeline.schemas import CINData, CNHData, RGData
-from doc_pipeline.shared.constants import INFERENCE_REPLY_TTL, QueueName, inference_reply_key
+from doc_pipeline.shared.constants import (
+    INFERENCE_REPLY_TTL,
+    VLM_BACKEND_NAME,
+    QueueName,
+    inference_reply_key,
+)
 from doc_pipeline.shared.queue import QueueService, get_queue_service
 from doc_pipeline.utils import fix_cpf_rg_swap, is_valid_cpf, normalize_cpf, validate_cpf
 
@@ -98,8 +101,6 @@ class InferenceServer:
 
     def __init__(self):
         self.queue: QueueService = get_queue_service()
-        self.extractor: QwenVLExtractor | None = None
-        self.vllm_client: VLLMClient | None = None
         self.vllm_embedded: VLLMEmbeddedClient | None = None
         self.classifier: ClassifierAdapter | None = None
         self.ocr_engine: OCREngine | None = None
@@ -154,62 +155,26 @@ class InferenceServer:
         self.pdf_converter = PDFConverter(dpi=200)
         logger.info("pdf_converter_loaded")
 
-        # Load VLM backend: vLLM embedded (in-process) > vLLM HTTP > HuggingFace
-        if settings.vllm_embedded:
-            logger.info(
-                "loading_vllm_embedded",
-                model=settings.vllm_model,
-                gpu_memory_utilization=settings.vllm_gpu_memory_utilization,
-                max_model_len=settings.vllm_max_model_len,
-            )
-            self.vllm_embedded = VLLMEmbeddedClient(
-                model=settings.vllm_model,
-                gpu_memory_utilization=settings.vllm_gpu_memory_utilization,
-                max_model_len=settings.vllm_max_model_len,
-                max_tokens=settings.vllm_max_tokens,
-                max_num_seqs=self._batch_size,
-            )
-            await self._run_sync(self.vllm_embedded.start)
-            # vLLM spawns a subprocess (multiprocessing.spawn) which can corrupt
-            # the existing Redis connection's file descriptors. Reconnect Redis.
-            await self.queue.close()
-            await self.queue.connect()
-            logger.info("vllm_embedded_loaded")
-        elif settings.vllm_enabled:
-            logger.info(
-                "loading_vllm_client",
-                base_url=settings.vllm_base_url,
-                model=settings.vllm_model,
-            )
-            self.vllm_client = VLLMClient(
-                base_url=settings.vllm_base_url,
-                model=settings.vllm_model,
-                max_tokens=settings.vllm_max_tokens,
-                timeout=settings.vllm_timeout,
-            )
-            await self.vllm_client.start()
-
-            # Wait for vLLM to be ready (up to 5 min)
-            for attempt in range(60):
-                if await self.vllm_client.health_check():
-                    logger.info("vllm_server_ready")
-                    break
-                logger.info("vllm_waiting_for_server", attempt=attempt + 1)
-                await asyncio.sleep(5.0)
-            else:
-                raise RuntimeError("vLLM server not ready after 5 minutes")
-        else:
-            logger.info(
-                "loading_vlm_model",
-                model=settings.extractor_model_qwen,
-                device=settings.extractor_device,
-            )
-            self.extractor = QwenVLExtractor(
-                model_name=settings.extractor_model_qwen,
-                device=settings.extractor_device,
-            )
-            self.extractor.load_model()
-            logger.info("vlm_model_loaded")
+        # Load VLM backend: vLLM embedded (in-process)
+        logger.info(
+            "loading_vllm_embedded",
+            model=settings.vllm_model,
+            gpu_memory_utilization=settings.vllm_gpu_memory_utilization,
+            max_model_len=settings.vllm_max_model_len,
+        )
+        self.vllm_embedded = VLLMEmbeddedClient(
+            model=settings.vllm_model,
+            gpu_memory_utilization=settings.vllm_gpu_memory_utilization,
+            max_model_len=settings.vllm_max_model_len,
+            max_tokens=settings.vllm_max_tokens,
+            max_num_seqs=self._batch_size,
+        )
+        await self._run_sync(self.vllm_embedded.start)
+        # vLLM spawns a subprocess (multiprocessing.spawn) which can corrupt
+        # the existing Redis connection's file descriptors. Reconnect Redis.
+        await self.queue.close()
+        await self.queue.connect()
+        logger.info("vllm_embedded_loaded")
 
         self._running = True
         logger.info(
@@ -225,12 +190,6 @@ class InferenceServer:
 
         if self.vllm_embedded:
             await self._run_sync(self.vllm_embedded.stop)
-
-        if self.vllm_client:
-            await self.vllm_client.stop()
-
-        if self.extractor:
-            self.extractor.unload_model()
 
         await self.queue.close()
         logger.info("inference_server_stopped")
@@ -336,28 +295,16 @@ class InferenceServer:
                 await asyncio.sleep(1.0)
 
     async def _vlm_generate(self, image: Image.Image, prompt: str) -> str:
-        """Generate VLM response via vLLM embedded, vLLM HTTP, or local HuggingFace."""
-        if self.vllm_embedded:
-            return await self._run_sync(self.vllm_embedded.generate, image, prompt)
-        if self.vllm_client:
-            return await self.vllm_client.generate(image, prompt)
-        return await self._run_sync(self.extractor._generate, image, prompt)
+        """Generate VLM response via in-process vLLM."""
+        return await self._run_sync(self.vllm_embedded.generate, image, prompt)
 
     async def _vlm_generate_batch(self, images: list[Image.Image], prompts: list[str]) -> list[str]:
-        """Generate VLM responses for a batch via vLLM embedded, vLLM HTTP, or HuggingFace."""
-        if self.vllm_embedded:
-            return await self._run_sync(self.vllm_embedded.generate_batch, images, prompts)
-        if self.vllm_client:
-            return await self.vllm_client.generate_batch(images, prompts)
-        return await self._run_sync(self.extractor._generate_batch, images, prompts)
+        """Generate VLM responses for a batch via in-process vLLM."""
+        return await self._run_sync(self.vllm_embedded.generate_batch, images, prompts)
 
     def _parse_vlm_json(self, text: str) -> dict:
-        """Parse JSON from VLM response using the appropriate parser."""
-        if self.vllm_embedded:
-            return VLLMEmbeddedClient.parse_json(text)
-        if self.vllm_client:
-            return VLLMClient.parse_json(text)
-        return self.extractor._parse_json(text)
+        """Parse JSON from VLM response."""
+        return VLLMEmbeddedClient.parse_json(text)
 
     async def _process_batch_smart(self, batch: list[dict]) -> None:
         """Process a mixed batch: route by operation, batch VLM calls together."""
@@ -581,7 +528,7 @@ class InferenceServer:
                 "document_type": doc_type,
                 "data": extraction_data,
                 "raw_text": None,
-                "backend": "paneas_v2",
+                "backend": VLM_BACKEND_NAME,
             },
             "cpf_validation": cpf_validation,
             # Backward compat for old extract() callers
@@ -634,7 +581,7 @@ class InferenceServer:
             "document_type": doc_type_str,
             "data": extraction_data,
             "raw_text": None,
-            "backend": "paneas_v2",
+            "backend": VLM_BACKEND_NAME,
         }
 
         result = {
@@ -779,8 +726,7 @@ class InferenceServer:
                         "classification": classification_dict,
                         "extraction": None,
                         "image_correction": correction_info,
-                        "success": not do_extract
-                        or classification.confidence >= min_confidence,
+                        "success": not do_extract or classification.confidence >= min_confidence,
                         "error": None
                         if not do_extract
                         else f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
@@ -898,7 +844,7 @@ class InferenceServer:
                                 "document_type": doc_type,
                                 "data": extraction_data,
                                 "raw_text": None,
-                                "backend": "paneas_v2",
+                                "backend": VLM_BACKEND_NAME,
                             },
                             "image_correction": correction_info,
                             "success": True,
@@ -913,7 +859,7 @@ class InferenceServer:
                                 "document_type": doc_type,
                                 "data": extraction_data,
                                 "raw_text": None,
-                                "backend": "paneas_v2",
+                                "backend": VLM_BACKEND_NAME,
                             },
                             "image_correction": correction_info,
                             "result": extraction_data,  # backward compat
@@ -1013,15 +959,8 @@ async def health():
 
     queue_depth = await server.queue.redis.llen(QueueName.INFERENCE)
 
-    if server.vllm_embedded:
-        vlm_backend = "vllm-embedded"
-        vlm_ready = server.vllm_embedded.is_loaded
-    elif server.vllm_client:
-        vlm_backend = "vllm"
-        vlm_ready = await server.vllm_client.health_check()
-    else:
-        vlm_backend = "huggingface"
-        vlm_ready = server.extractor is not None and server.extractor.is_loaded
+    vlm_backend = "vllm-embedded"
+    vlm_ready = server.vllm_embedded is not None and server.vllm_embedded.is_loaded
 
     return {
         "status": "ok",

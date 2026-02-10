@@ -8,7 +8,6 @@ without base64 encoding or HTTP serialization.
 from PIL import Image
 
 from ..observability import get_logger
-from .vllm_client import VLLMClient
 
 logger = get_logger("vllm_embedded")
 
@@ -133,5 +132,7 @@ class VLLMEmbeddedClient:
 
     @staticmethod
     def parse_json(text: str) -> dict:
-        """Parse JSON from VLM response (reuses VLLMClient logic)."""
-        return VLLMClient.parse_json(text)
+        """Parse JSON from VLM response."""
+        from .vlm_utils import parse_vlm_json
+
+        return parse_vlm_json(text)
