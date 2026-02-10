@@ -8,6 +8,7 @@ from pathlib import Path
 from PIL import Image
 
 from ..schemas import CINData, CNHData, DocumentType, ExtractionResult, RGData
+from ..shared.constants import VLM_BACKEND_NAME
 
 
 class BaseExtractor(ABC):
@@ -102,7 +103,7 @@ class BaseExtractor(ABC):
         return ExtractionResult(
             document_type=document_type,
             data=data,
-            backend="paneas_v2",
+            backend=VLM_BACKEND_NAME,
         )
 
     def _load_image(self, image: str | Path | Image.Image) -> Image.Image:

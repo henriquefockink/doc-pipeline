@@ -1,5 +1,8 @@
 """
-Extractor usando Qwen3-VL para extração contextualizada de dados.
+Extractor using Qwen2.5-VL via HuggingFace transformers (local GPU).
+
+This extractor is for use via CLI (`cli.py`) and local testing.
+Production uses `VLLMEmbeddedClient` via `inference_server.py`.
 """
 
 import json
@@ -8,14 +11,17 @@ from pathlib import Path
 
 from PIL import Image
 
+from ..observability import get_logger
 from ..prompts import CIN_EXTRACTION_PROMPT, CNH_EXTRACTION_PROMPT, RG_EXTRACTION_PROMPT
 from ..schemas import CINData, CNHData, RGData
 from ..utils import fix_cpf_rg_swap
 from .base import BaseExtractor
 
+logger = get_logger("qwen_vl_extractor")
+
 
 class QwenVLExtractor(BaseExtractor):
-    """Extractor usando Qwen3-VL-8B-Instruct."""
+    """Extractor using Qwen2.5-VL via HuggingFace transformers."""
 
     backend_name = "qwen-vl"
 
@@ -43,6 +49,11 @@ class QwenVLExtractor(BaseExtractor):
         self._model = None
         self._processor = None
 
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is loaded and ready for inference."""
+        return self._model is not None
+
     def _get_model_class(self):
         """Get the appropriate model class based on model name."""
         if "Qwen3-VL" in self.model_name:
@@ -62,7 +73,7 @@ class QwenVLExtractor(BaseExtractor):
         import torch
         from transformers import AutoProcessor
 
-        print(f"Carregando modelo {self.model_name}...")
+        logger.info("loading_model", model=self.model_name)
 
         ModelClass = self._get_model_class()
 
@@ -75,7 +86,7 @@ class QwenVLExtractor(BaseExtractor):
                 attn_implementation="flash_attention_2",
             )
         except Exception:
-            print("Flash Attention 2 não disponível, usando SDPA...")
+            logger.info("flash_attention_unavailable_using_sdpa")
             self._model = ModelClass.from_pretrained(
                 self.model_name,
                 torch_dtype=torch.bfloat16,
@@ -89,7 +100,7 @@ class QwenVLExtractor(BaseExtractor):
             max_pixels=self.max_pixels,
         )
 
-        print(f"Modelo {self.model_name} carregado em {self.device}")
+        logger.info("model_loaded", model=self.model_name, device=self.device)
 
     def unload_model(self) -> None:
         """Descarrega o modelo para liberar memória."""
