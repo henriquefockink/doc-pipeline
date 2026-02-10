@@ -185,12 +185,8 @@ class Settings(BaseSettings):
     )
 
     # Inference server settings
-    inference_server_enabled: bool = Field(
-        default=False,
-        description="Use remote inference server instead of local VLM",
-    )
     inference_timeout_seconds: float = Field(
-        default=30.0,
+        default=120.0,
         description="Timeout for inference requests",
     )
     inference_server_health_port: int = Field(
@@ -216,11 +212,11 @@ class Settings(BaseSettings):
         description="Use vLLM server for VLM inference instead of local HuggingFace model",
     )
     vllm_base_url: str = Field(
-        default="http://vllm:8000/v1",
+        default="http://vllm:9030/v1",
         description="vLLM OpenAI-compatible API base URL",
     )
     vllm_model: str = Field(
-        default="Qwen/Qwen2.5-VL-3B-Instruct",
+        default="Qwen/Qwen2.5-VL-7B-Instruct",
         description="Model name served by vLLM",
     )
     vllm_max_tokens: int = Field(

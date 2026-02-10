@@ -88,7 +88,7 @@ class InferenceClient:
 
         # Poll for reply
         poll_interval = 0.1  # 100ms between polls
-        end_time = asyncio.get_event_loop().time() + self._timeout
+        end_time = asyncio.get_running_loop().time() + self._timeout
 
         while True:
             cached = await self._queue.redis.get(reply_key)
@@ -105,7 +105,7 @@ class InferenceClient:
                 )
                 return reply
 
-            remaining = end_time - asyncio.get_event_loop().time()
+            remaining = end_time - asyncio.get_running_loop().time()
             if remaining <= 0:
                 raise InferenceTimeoutError(f"Inference timeout after {self._timeout}s")
 

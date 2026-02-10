@@ -54,8 +54,8 @@ Client ─► api.py ─► Redis queue ──► │  inference_server.py (port
               │                     │    ├── OrientationCorrector (shares EasyOCR)     │
               │                     │    ├── PDFConverter (CPU)                         │
               │                     │    └── VLLMClient (HTTP) ──► vLLM (port 8000)    │
-              │                     │                               GPU ~8-10GB        │
-              │                     │                               Qwen2.5-VL-3B      │
+              │                     │                               GPU ~16GB          │
+              │                     │                               Qwen2.5-VL-7B      │
               │                     │                               continuous batching │
               │                     └─────────────────────────────────────────────────┘
               │
@@ -90,6 +90,12 @@ Client ─► api.py ─► Redis queue ──► │  inference_server.py (port
 - **VLM backend is swappable**: `DOC_PIPELINE_VLLM_ENABLED=true` uses vLLM (production); `false` falls back to local HuggingFace transformers (dev/testing).
 
 **Entry points**: `cli.py`, `api.py`, `worker_docid.py`, `worker_ocr.py`, `inference_server.py`
+
+### Documentation
+
+The `docs/` folder contains detailed architecture and API documentation that must be kept in sync with code changes:
+- `docs/API_FLOW.md` — Detailed request/response flow diagrams for all endpoints
+- `docs/DEPENDENCIA_DOC_CLASSIFIER.md` — External dependency notes (doc-classifier package)
 
 ### Core Modules
 
@@ -151,21 +157,32 @@ Workers support three backends (set via `DOC_PIPELINE_EXTRACTOR_BACKEND` or per-
 
 ## Port Allocation
 
+**IMPORTANT**: doc-pipeline uses the **9000-9099** port range. The **8000-8099** range belongs to ASR platform. Never use ports in the 8xxx range to avoid conflicts with ASR services.
+
 | Service | Port | Description |
 |---------|------|-------------|
 | API | 9000 | REST API (FastAPI) |
 | DocID workers 1-5 | 9010, 9012, 9014, 9016, 9018 | Worker health/metrics |
 | OCR worker | 9011 | OCR worker health/metrics |
 | Inference server | 9020 | Centralized VLM batching |
+| vLLM | 9030 | VLM server (OpenAI-compatible API) |
+
+### Port ranges on this server (H200)
+
+| Range | Service | Owner |
+|-------|---------|-------|
+| 6379 | Redis | shared |
+| 8000-8099 | ASR platform (API, workers, TTS) | asr-platform |
+| 8080 | cAdvisor | monitoring |
+| 9000-9099 | Doc pipeline (API, workers, inference, vLLM) | doc-pipeline |
+| 9100 | Node exporter | monitoring |
+| 9400 | DCGM exporter | monitoring |
 
 ## Docker Deployment
 
 ```bash
 # Core services (Redis + API + Inference Server + Workers) — VLM via HuggingFace
 docker compose up -d
-
-# With vLLM for continuous batching (production recommended)
-docker compose --profile vllm up -d
 
 # Rebuild after code changes
 docker compose build && docker compose up -d
@@ -177,7 +194,7 @@ docker compose build && docker compose up -d
 |-----------|-------|-----|-------------|
 | **redis** | redis:7-alpine | No | Message broker + result store (AOF persistence) |
 | **api** | Dockerfile.api | No | FastAPI REST API, rate limiting, job enqueuing |
-| **vllm** | vllm/vllm-openai:latest | Yes (~8-10GB) | vLLM server, continuous batching, PagedAttention (profile: `vllm`) |
+| **vllm** | vllm/vllm-openai:latest | Yes (~16-20GB) | vLLM server (Qwen2.5-VL-7B), continuous batching, PagedAttention |
 | **inference-server** | Dockerfile.inference-server | Yes (~3-4GB) | EfficientNet + EasyOCR + VLM proxy, batched request processing |
 | **worker-docid-1..5** | Dockerfile.worker (python:3.11-slim) | No | Stateless job consumers, no ML models |
 | **worker-ocr** | Dockerfile.worker (python:3.11-slim) | No | Stateless OCR job consumer, no ML models |
@@ -282,24 +299,24 @@ Each service uses a unique `server_name` in `sentry_sdk.init()` so errors in Gli
 
 ## GPU / VRAM Requirements
 
-With vLLM (production):
-- **vLLM container**: ~8-10GB VRAM (Qwen2.5-VL-3B + KV cache, depends on `gpu-memory-utilization`)
+With vLLM (default, production):
+- **vLLM container**: ~16-20GB VRAM (Qwen2.5-VL-7B + KV cache, depends on `gpu-memory-utilization`)
 - **Inference server**: ~3-4GB VRAM (EfficientNet ~200MB + EasyOCR ~2-4GB)
 - **Workers**: 0 GB VRAM (stateless, CPU-only)
-- **Total**: ~12-14GB minimum (single GPU)
+- **Total**: ~20-24GB minimum (single GPU)
 
-Without vLLM (HuggingFace fallback):
-- **Inference server**: ~10-12GB VRAM (classifier + EasyOCR + Qwen2.5-VL-3B via transformers)
+Without vLLM (HuggingFace fallback, set `VLLM_ENABLED=false`):
+- **Inference server**: ~20-24GB VRAM (classifier + EasyOCR + Qwen2.5-VL-7B via transformers)
 - **Workers**: 0 GB VRAM
-- **Total**: ~10-12GB minimum
+- **Total**: ~20-24GB minimum
 
-Production: H200 (144GB) shared with ASR services, using `gpu-memory-utilization=0.90` for vLLM.
+Production: H200 (144GB) shared with ASR services.
 
 ## Technology Stack and Infrastructure Dependencies
 
 | Component | Technology | Purpose | GPU Required |
 |-----------|-----------|---------|:------------:|
-| VLM | **Qwen2.5-VL-3B-Instruct** (3B param vision-language model) | Document data extraction | Yes |
+| VLM | **Qwen2.5-VL-7B-Instruct** (7B param vision-language model) | Document data extraction | Yes |
 | VLM Server | **vLLM** (continuous batching, PagedAttention, CUDA graphs) | High-throughput VLM inference | Yes (NVIDIA, CUDA 12+) |
 | Classifier | **EfficientNet-B0** (PyTorch, ~200MB) | Document type classification (12 classes) | Yes |
 | OCR Engine | **EasyOCR** (PyTorch + CRAFT text detection) | Text extraction, orientation correction | Yes |
@@ -316,8 +333,8 @@ Production: H200 (144GB) shared with ASR services, using `gpu-memory-utilization
 ### Infrastructure Requirements
 
 - **GPU**: NVIDIA GPU with CUDA 12+ support (tested: RTX 5090, H200). vLLM requires compute capability sm_80+ (Ampere or newer).
-- **VRAM**: Minimum 12GB for full stack with vLLM. Production recommended: 16GB+ with `gpu-memory-utilization=0.70-0.90`.
-- **Docker**: Docker Engine with `nvidia-container-toolkit` for GPU passthrough. Compose v2+ for profiles support.
+- **VRAM**: Minimum 24GB for full stack with vLLM (7B model). Production recommended: 32GB+ with `gpu-memory-utilization=0.40-0.70`.
+- **Docker**: Docker Engine with `nvidia-container-toolkit` for GPU passthrough. Compose v2+.
 - **Network**: Internal Docker network (`doc-pipeline`). Only API port (9000) and optionally vLLM (8000) exposed externally.
 - **Storage**: Shared volume (`temp-images`) for file passing between containers. Model cache volumes for HuggingFace and EasyOCR models (~5-10GB).
 - **RAM**: ~8GB for vLLM container, ~2GB for inference server, ~200MB per worker. Total ~12GB system RAM.

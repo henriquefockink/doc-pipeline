@@ -25,7 +25,7 @@ class VLLMClient:
     def __init__(
         self,
         base_url: str = "http://vllm:8000/v1",
-        model: str = "Qwen/Qwen2.5-VL-3B-Instruct",
+        model: str = "Qwen/Qwen2.5-VL-7B-Instruct",
         max_tokens: int = 1024,
         timeout: float = 60.0,
     ):
@@ -51,12 +51,24 @@ class VLLMClient:
             self._client = None
         logger.info("vllm_client_stopped")
 
-    def _encode_image(self, image: Image.Image) -> str:
-        """Encode PIL Image to base64 JPEG data URL."""
+    def _encode_image(self, image: Image.Image, max_side: int = 1280) -> str:
+        """Encode PIL Image to base64 JPEG data URL, resizing if needed.
+
+        Large images generate too many vision tokens for the model context.
+        A 3024x4032 image produces ~15k tokens vs max_model_len=4096.
+        Resizing to max 1280px keeps tokens within limits.
+        """
+        w, h = image.size
+        if max(w, h) > max_side:
+            scale = max_side / max(w, h)
+            image = image.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
         buf = io.BytesIO()
-        image.save(buf, format="JPEG", quality=90)
+        if image.mode != "RGB":
+            image = image.convert("RGB")
+        image.save(buf, format="PNG")
         b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{b64}"
+        return f"data:image/png;base64,{b64}"
 
     async def generate(self, image: Image.Image, prompt: str) -> str:
         """Send a single VLM request to vLLM and return the generated text."""
@@ -87,6 +99,11 @@ class VLLMClient:
             except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
                 last_error = e
                 if isinstance(e, httpx.HTTPStatusError) and e.response.status_code < 500:
+                    logger.error(
+                        "vllm_client_error",
+                        status=e.response.status_code,
+                        body=e.response.text[:500],
+                    )
                     raise
                 if attempt < 2:
                     logger.warning(
@@ -99,9 +116,23 @@ class VLLMClient:
         raise last_error
 
     async def generate_batch(self, images: list[Image.Image], prompts: list[str]) -> list[str]:
-        """Send N requests in parallel — vLLM handles continuous batching internally."""
+        """Send N requests in parallel — vLLM handles continuous batching internally.
+
+        Uses return_exceptions=True so one failed request doesn't kill the whole batch.
+        Individual failures are re-raised as strings that the caller can detect.
+        """
         tasks = [self.generate(img, prompt) for img, prompt in zip(images, prompts, strict=True)]
-        return await asyncio.gather(*tasks)
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # Convert results: keep strings, re-raise exceptions as error marker strings
+        output = []
+        for r in results:
+            if isinstance(r, BaseException):
+                # Return a sentinel that _build_extraction_result will handle
+                output.append(f"__ERROR__: {r}")
+            else:
+                output.append(r)
+        return output
 
     async def health_check(self) -> bool:
         """Check if vLLM server is ready by querying /models."""

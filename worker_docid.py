@@ -9,8 +9,6 @@ OCR) is delegated to the centralized inference server via Redis.
 import asyncio
 import contextlib
 import os
-import signal
-import sys
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -290,11 +288,19 @@ class DocumentWorker:
                 logger.warning("temp_file_cleanup_error", path=job.image_path, error=str(e))
 
         # Deliver result
-        await self.queue.set_progress(job.request_id, "delivering")
-        success = await self.delivery.deliver(job)
+        try:
+            await self.queue.set_progress(job.request_id, "delivering")
+            success = await self.delivery.deliver(job)
 
-        if not success and job.delivery_mode == "webhook":
-            await self.queue.move_to_dlq(job, "Webhook delivery failed")
+            if not success and job.delivery_mode == "webhook":
+                await self.queue.move_to_dlq(job, "Webhook delivery failed")
+        except Exception as e:
+            logger.error(
+                "delivery_error",
+                request_id=job.request_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
 
 
 # Global worker instance
@@ -364,13 +370,6 @@ def main():
     import uvicorn
 
     settings = get_settings()
-
-    def signal_handler(signum, frame):
-        logger.info("signal_received", signal=signum)
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
 
     logger.info(
         "worker_server_start",

@@ -18,10 +18,9 @@ and processes them in a single GPU forward pass for higher throughput.
 
 import asyncio
 import contextlib
+import functools
 import json
 import re
-import signal
-import sys
 import time
 from contextlib import asynccontextmanager
 
@@ -270,15 +269,13 @@ class InferenceServer:
         """Generate VLM response via vLLM or local HuggingFace."""
         if self.vllm_client:
             return await self.vllm_client.generate(image, prompt)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.extractor._generate, image, prompt)
+        return await self._run_sync(self.extractor._generate, image, prompt)
 
     async def _vlm_generate_batch(self, images: list[Image.Image], prompts: list[str]) -> list[str]:
         """Generate VLM responses for a batch via vLLM or local HuggingFace."""
         if self.vllm_client:
             return await self.vllm_client.generate_batch(images, prompts)
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, self.extractor._generate_batch, images, prompts)
+        return await self._run_sync(self.extractor._generate_batch, images, prompts)
 
     def _parse_vlm_json(self, text: str) -> dict:
         """Parse JSON from VLM response using the appropriate parser."""
@@ -311,14 +308,19 @@ class InferenceServer:
                 await self._process_vlm_batch(vlm_requests)
 
     # ------------------------------------------------------------------
-    # Image loading & preprocessing helpers
+    # Image loading & preprocessing helpers (sync — must be called via _run_sync)
     # ------------------------------------------------------------------
 
-    def _load_image(self, image_path: str) -> Image.Image:
+    async def _run_sync(self, func, *args):
+        """Run a blocking function in the thread pool to avoid blocking the event loop."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, functools.partial(func, *args))
+
+    def _load_image_sync(self, image_path: str) -> Image.Image:
         """Load and convert image to RGB."""
         return Image.open(image_path).convert("RGB")
 
-    def _correct_orientation(
+    def _correct_orientation_sync(
         self, image: Image.Image, auto_rotate: bool
     ) -> tuple[Image.Image, dict]:
         """Correct image orientation, return (image, correction_info)."""
@@ -332,185 +334,23 @@ class InferenceServer:
         result = self.orientation_corrector.correct(image)
         return result.image, result.to_dict()
 
-    def _convert_pdf_first_page(self, file_path: str) -> Image.Image:
+    def _convert_pdf_first_page_sync(self, file_path: str) -> Image.Image:
         """Convert first page of PDF to image."""
         pages = self.pdf_converter.convert(file_path, max_pages=1)
         if not pages:
             raise ValueError("PDF has no pages")
         return pages[0].convert("RGB")
 
-    # ------------------------------------------------------------------
-    # VLM helpers (shared by extract and process)
-    # ------------------------------------------------------------------
+    def _classify_sync(self, image: Image.Image):
+        """Classify image via EfficientNet."""
+        return self.classifier.classify(image)
 
-    def _get_prompt(self, doc_type: str) -> str:
-        """Get the extraction prompt for a document type."""
-        if doc_type.startswith("rg"):
-            return RG_EXTRACTION_PROMPT
-        elif doc_type.startswith("cnh"):
-            return CNH_EXTRACTION_PROMPT
-        elif doc_type.startswith("cin"):
-            return CIN_EXTRACTION_PROMPT
-        else:
-            raise ValueError(f"Unknown document type: {doc_type}")
+    def _ocr_extract_sync(self, image: Image.Image) -> tuple[str, float]:
+        """Extract text via EasyOCR."""
+        return self.ocr_engine.extract_text(image)
 
-    def _build_extraction_result(self, raw_text: str, doc_type: str) -> dict:
-        """Parse VLM response and build structured extraction result dict."""
-        data = self._parse_vlm_json(raw_text)
-        data = fix_cpf_rg_swap(data)
-
-        if doc_type.startswith("rg"):
-            model = RGData(**{k: v for k, v in data.items() if k in RGData.model_fields})
-        elif doc_type.startswith("cin"):
-            model = CINData(**{k: v for k, v in data.items() if k in CINData.model_fields})
-        else:
-            model = CNHData(**{k: v for k, v in data.items() if k in CNHData.model_fields})
-
-        return model.model_dump()
-
-    def _hybrid_cpf_validation(
-        self, extraction_data: dict, image: Image.Image, request_id: str
-    ) -> dict:
-        """Hybrid mode: validate CPF via EasyOCR fallback if VLM CPF is invalid."""
-        cpf = extraction_data.get("cpf")
-        if is_valid_cpf(cpf):
-            return extraction_data
-
-        logger.info(
-            "hybrid_cpf_invalid_trying_ocr",
-            request_id=request_id,
-            vlm_cpf=cpf,
-        )
-        ocr_text, _ = self.ocr_engine.extract_text(image)
-        cpf_patterns = [
-            r"\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b",
-            r"\b(\d{9})/(\d{2})\b",
-        ]
-        for pattern in cpf_patterns:
-            matches = re.findall(pattern, ocr_text)
-            if matches:
-                if isinstance(matches[0], tuple):
-                    candidate = normalize_cpf(matches[0][0] + matches[0][1])
-                else:
-                    candidate = matches[0]
-                if is_valid_cpf(candidate):
-                    logger.info(
-                        "hybrid_ocr_cpf_found",
-                        request_id=request_id,
-                        ocr_cpf=candidate,
-                    )
-                    extraction_data["cpf"] = candidate
-                    return extraction_data
-
-        return extraction_data
-
-    # ------------------------------------------------------------------
-    # Operation handlers
-    # ------------------------------------------------------------------
-
-    def _handle_classify(self, request: dict, image: Image.Image) -> dict:
-        """Handle classify operation: orient + classify via EfficientNet."""
-        classification = self.classifier.classify(image)
-        return {
-            "classification": classification.model_dump(),
-        }
-
-    async def _handle_extract_single(self, request: dict, image: Image.Image) -> dict:
-        """Handle extract operation for a single request (uses VLM)."""
-        doc_type = request["document_type"]
-        backend = request.get("backend", "vlm")
-        prompt = self._get_prompt(doc_type)
-        raw_text = await self._vlm_generate(image, prompt)
-        extraction_data = self._build_extraction_result(raw_text, doc_type)
-
-        # Hybrid CPF validation
-        if backend == "hybrid":
-            extraction_data = self._hybrid_cpf_validation(
-                extraction_data, image, request["request_id"]
-            )
-
-        # CPF validation result
-        cpf_validation = None
-        if extraction_data.get("cpf"):
-            cpf_validation = validate_cpf(extraction_data["cpf"])
-
-        return {
-            "extraction": {
-                "document_type": doc_type,
-                "data": extraction_data,
-                "raw_text": None,
-                "backend": "paneas_v2",
-            },
-            "cpf_validation": cpf_validation,
-            # Backward compat for old extract() callers
-            "result": extraction_data,
-        }
-
-    async def _handle_process_single(self, request: dict, image: Image.Image) -> dict:
-        """Handle process (classify + extract) for a single request."""
-        do_extract = request.get("extract", True)
-        min_confidence = request.get("min_confidence") or settings.min_confidence
-        backend = request.get("backend", "vlm")
-
-        # Classify
-        classification = self.classifier.classify(image)
-        classification_dict = classification.model_dump()
-
-        if not do_extract:
-            return {
-                "file_path": None,
-                "classification": classification_dict,
-                "extraction": None,
-                "success": True,
-                "error": None,
-            }
-
-        # Check confidence
-        if classification.confidence < min_confidence:
-            return {
-                "file_path": None,
-                "classification": classification_dict,
-                "extraction": None,
-                "success": False,
-                "error": f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
-            }
-
-        # Extract via VLM
-        doc_type_str = classification.document_type.value
-        prompt = self._get_prompt(doc_type_str)
-        raw_text = await self._vlm_generate(image, prompt)
-        extraction_data = self._build_extraction_result(raw_text, doc_type_str)
-
-        # Hybrid CPF validation
-        if backend == "hybrid":
-            extraction_data = self._hybrid_cpf_validation(
-                extraction_data, image, request["request_id"]
-            )
-
-        # Build extraction result dict
-        extraction_dict = {
-            "document_type": doc_type_str,
-            "data": extraction_data,
-            "raw_text": None,
-            "backend": "paneas_v2",
-        }
-
-        result = {
-            "file_path": None,
-            "classification": classification_dict,
-            "extraction": extraction_dict,
-            "success": True,
-            "error": None,
-        }
-
-        # CPF validation
-        if extraction_data.get("cpf"):
-            result["cpf_validation"] = validate_cpf(extraction_data["cpf"])
-
-        return result
-
-    def _handle_ocr(self, request: dict) -> dict:
-        """Handle OCR operation: convert PDF/image, orient, OCR each page."""
+    def _handle_ocr_sync(self, request: dict) -> dict:
+        """Handle OCR operation synchronously (runs in thread pool)."""
         file_path = request["image_path"]
         max_pages = request.get("max_pages", 10)
         auto_rotate = request.get("auto_rotate", True)
@@ -554,6 +394,187 @@ class InferenceServer:
             "language": settings.ocr_language,
         }
 
+    def _preprocess_image_sync(
+        self, image_path: str, auto_rotate: bool
+    ) -> tuple[Image.Image, dict]:
+        """Load image (or PDF first page) and correct orientation synchronously."""
+        if is_pdf(image_path):
+            image = self._convert_pdf_first_page_sync(image_path)
+        else:
+            image = self._load_image_sync(image_path)
+        image, correction_info = self._correct_orientation_sync(image, auto_rotate)
+        return image, correction_info
+
+    # ------------------------------------------------------------------
+    # VLM helpers (shared by extract and process)
+    # ------------------------------------------------------------------
+
+    def _get_prompt(self, doc_type: str) -> str:
+        """Get the extraction prompt for a document type."""
+        if doc_type.startswith("rg"):
+            return RG_EXTRACTION_PROMPT
+        elif doc_type.startswith("cnh"):
+            return CNH_EXTRACTION_PROMPT
+        elif doc_type.startswith("cin"):
+            return CIN_EXTRACTION_PROMPT
+        else:
+            raise ValueError(f"Unknown document type: {doc_type}")
+
+    def _build_extraction_result(self, raw_text: str, doc_type: str) -> dict:
+        """Parse VLM response and build structured extraction result dict."""
+        data = self._parse_vlm_json(raw_text)
+        data = fix_cpf_rg_swap(data)
+
+        if doc_type.startswith("rg"):
+            model = RGData(**{k: v for k, v in data.items() if k in RGData.model_fields})
+        elif doc_type.startswith("cin"):
+            model = CINData(**{k: v for k, v in data.items() if k in CINData.model_fields})
+        else:
+            model = CNHData(**{k: v for k, v in data.items() if k in CNHData.model_fields})
+
+        return model.model_dump()
+
+    def _hybrid_cpf_validation_sync(
+        self, extraction_data: dict, image: Image.Image, request_id: str
+    ) -> dict:
+        """Hybrid mode: validate CPF via EasyOCR fallback if VLM CPF is invalid."""
+        cpf = extraction_data.get("cpf")
+        if is_valid_cpf(cpf):
+            return extraction_data
+
+        logger.info(
+            "hybrid_cpf_invalid_trying_ocr",
+            request_id=request_id,
+            vlm_cpf=cpf,
+        )
+        ocr_text, _ = self.ocr_engine.extract_text(image)
+        cpf_patterns = [
+            r"\b(\d{3}\.\d{3}\.\d{3}-\d{2})\b",
+            r"\b(\d{9})/(\d{2})\b",
+        ]
+        for pattern in cpf_patterns:
+            matches = re.findall(pattern, ocr_text)
+            if matches:
+                if isinstance(matches[0], tuple):
+                    candidate = normalize_cpf(matches[0][0] + matches[0][1])
+                else:
+                    candidate = matches[0]
+                if is_valid_cpf(candidate):
+                    logger.info(
+                        "hybrid_ocr_cpf_found",
+                        request_id=request_id,
+                        ocr_cpf=candidate,
+                    )
+                    extraction_data["cpf"] = candidate
+                    return extraction_data
+
+        return extraction_data
+
+    # ------------------------------------------------------------------
+    # Operation handlers
+    # ------------------------------------------------------------------
+
+    async def _handle_classify(self, request: dict, image: Image.Image) -> dict:
+        """Handle classify operation: orient + classify via EfficientNet."""
+        classification = await self._run_sync(self.classifier.classify, image)
+        return {
+            "classification": classification.model_dump(),
+        }
+
+    async def _handle_extract_single(self, request: dict, image: Image.Image) -> dict:
+        """Handle extract operation for a single request (uses VLM)."""
+        doc_type = request["document_type"]
+        backend = request.get("backend", "vlm")
+        prompt = self._get_prompt(doc_type)
+        raw_text = await self._vlm_generate(image, prompt)
+        extraction_data = self._build_extraction_result(raw_text, doc_type)
+
+        # Hybrid CPF validation
+        if backend == "hybrid":
+            extraction_data = await self._run_sync(
+                self._hybrid_cpf_validation_sync, extraction_data, image, request["request_id"]
+            )
+
+        # CPF validation result
+        cpf_validation = None
+        if extraction_data.get("cpf"):
+            cpf_validation = validate_cpf(extraction_data["cpf"])
+
+        return {
+            "extraction": {
+                "document_type": doc_type,
+                "data": extraction_data,
+                "raw_text": None,
+                "backend": "paneas_v2",
+            },
+            "cpf_validation": cpf_validation,
+            # Backward compat for old extract() callers
+            "result": extraction_data,
+        }
+
+    async def _handle_process_single(self, request: dict, image: Image.Image) -> dict:
+        """Handle process (classify + extract) for a single request."""
+        do_extract = request.get("extract", True)
+        min_confidence = request.get("min_confidence") or settings.min_confidence
+        backend = request.get("backend", "vlm")
+
+        # Classify
+        classification = await self._run_sync(self.classifier.classify, image)
+        classification_dict = classification.model_dump()
+
+        if not do_extract:
+            return {
+                "file_path": None,
+                "classification": classification_dict,
+                "extraction": None,
+                "success": True,
+                "error": None,
+            }
+
+        # Check confidence
+        if classification.confidence < min_confidence:
+            return {
+                "file_path": None,
+                "classification": classification_dict,
+                "extraction": None,
+                "success": False,
+                "error": f"Confiança ({classification.confidence:.1%}) abaixo do mínimo",
+            }
+
+        # Extract via VLM
+        doc_type_str = classification.document_type.value
+        prompt = self._get_prompt(doc_type_str)
+        raw_text = await self._vlm_generate(image, prompt)
+        extraction_data = self._build_extraction_result(raw_text, doc_type_str)
+
+        # Hybrid CPF validation
+        if backend == "hybrid":
+            extraction_data = await self._run_sync(
+                self._hybrid_cpf_validation_sync, extraction_data, image, request["request_id"]
+            )
+
+        # Build extraction result dict
+        extraction_dict = {
+            "document_type": doc_type_str,
+            "data": extraction_data,
+            "raw_text": None,
+            "backend": "paneas_v2",
+        }
+
+        result = {
+            "file_path": None,
+            "classification": classification_dict,
+            "extraction": extraction_dict,
+            "success": True,
+            "error": None,
+        }
+
+        # CPF validation
+        if extraction_data.get("cpf"):
+            result["cpf_validation"] = validate_cpf(extraction_data["cpf"])
+
+        return result
+
     # ------------------------------------------------------------------
     # Single request processing
     # ------------------------------------------------------------------
@@ -576,21 +597,17 @@ class InferenceServer:
         try:
             # OCR handles its own image loading (multi-page PDF)
             if operation == "ocr":
-                result = self._handle_ocr(request)
+                result = await self._run_sync(self._handle_ocr_sync, request)
             else:
-                # Load image (PDF → first page for classify/extract/process)
-                if is_pdf(request["image_path"]):
-                    image = self._convert_pdf_first_page(request["image_path"])
-                else:
-                    image = self._load_image(request["image_path"])
-
-                # Orientation correction
+                # Load image + orientation correction (blocking I/O + CPU)
                 auto_rotate = request.get("auto_rotate", True)
-                image, correction_info = self._correct_orientation(image, auto_rotate)
+                image, correction_info = await self._run_sync(
+                    self._preprocess_image_sync, request["image_path"], auto_rotate
+                )
 
                 # Route to handler
                 if operation == "classify":
-                    result = self._handle_classify(request, image)
+                    result = await self._handle_classify(request, image)
                 elif operation == "extract":
                     result = await self._handle_extract_single(request, image)
                 elif operation == "process":
@@ -669,21 +686,17 @@ class InferenceServer:
             try:
                 operation = req.get("operation", "extract")
 
-                # Load image
-                if is_pdf(req["image_path"]):
-                    image = self._convert_pdf_first_page(req["image_path"])
-                else:
-                    image = self._load_image(req["image_path"])
-
-                # Orient
+                # Load image + orientation correction (blocking)
                 auto_rotate = req.get("auto_rotate", True)
-                image, correction_info = self._correct_orientation(image, auto_rotate)
+                image, correction_info = await self._run_sync(
+                    self._preprocess_image_sync, req["image_path"], auto_rotate
+                )
 
                 if operation == "process":
                     do_extract = req.get("extract", True)
                     min_confidence = req.get("min_confidence") or settings.min_confidence
 
-                    classification = self.classifier.classify(image)
+                    classification = await self._run_sync(self.classifier.classify, image)
                     classification_dict = classification.model_dump()
 
                     if not do_extract or classification.confidence < min_confidence:
@@ -720,13 +733,20 @@ class InferenceServer:
             prompt = self._get_prompt(doc_type)
             vlm_items.append((pp_idx, image, prompt))
 
-        # Run batched VLM
-        raw_texts = []
+        # Run batched VLM — build pp_idx → raw_text mapping
+        vlm_results: dict[int, str] = {}  # pp_idx → raw_text
         if vlm_items:
             images_for_vlm = [item[1] for item in vlm_items]
             prompts_for_vlm = [item[2] for item in vlm_items]
             try:
                 raw_texts = await self._vlm_generate_batch(images_for_vlm, prompts_for_vlm)
+                for (pp_idx, _, _), raw_text in zip(vlm_items, raw_texts, strict=True):
+                    # Handle per-item errors from generate_batch (return_exceptions=True)
+                    if isinstance(raw_text, str) and raw_text.startswith("__ERROR__:"):
+                        i = preprocessed[pp_idx][0]
+                        errors[i] = raw_text.replace("__ERROR__: ", "")
+                    else:
+                        vlm_results[pp_idx] = raw_text
             except Exception as e:
                 sentry_sdk.capture_exception(e)
                 logger.error(
@@ -739,7 +759,6 @@ class InferenceServer:
                 for pp_idx, _, _ in vlm_items:
                     i = preprocessed[pp_idx][0]
                     errors[i] = str(e)
-                raw_texts = []
 
         batch_time_ms = round((time.perf_counter() - start_time) * 1000, 2)
 
@@ -752,10 +771,7 @@ class InferenceServer:
         )
 
         # Phase 3: Build replies
-        vlm_text_idx = 0
-        for _pp_idx, (i, image, doc_type, class_or_skip, correction_info) in enumerate(
-            preprocessed
-        ):
+        for pp_idx, (i, image, doc_type, class_or_skip, correction_info) in enumerate(preprocessed):
             req = batch[i]
             inference_id = req["inference_id"]
             reply_key = inference_reply_key(inference_id)
@@ -781,16 +797,18 @@ class InferenceServer:
                 }
                 inference_metrics_requests_total.labels(operation=operation, status="success").inc()
             else:
-                # Has VLM result
+                # Has VLM result — look up by pp_idx
                 try:
-                    raw_text = raw_texts[vlm_text_idx]
-                    vlm_text_idx += 1
+                    raw_text = vlm_results[pp_idx]
                     extraction_data = self._build_extraction_result(raw_text, doc_type)
 
                     backend = req.get("backend", "vlm")
                     if backend == "hybrid":
-                        extraction_data = self._hybrid_cpf_validation(
-                            extraction_data, image, req["request_id"]
+                        extraction_data = await self._run_sync(
+                            self._hybrid_cpf_validation_sync,
+                            extraction_data,
+                            image,
+                            req["request_id"],
                         )
 
                     if operation == "process":
@@ -838,7 +856,6 @@ class InferenceServer:
                         batch_time_ms / 1000
                     )
                 except Exception as e:
-                    vlm_text_idx += 1
                     reply = {
                         "inference_id": inference_id,
                         "success": False,
@@ -921,7 +938,7 @@ async def health():
     if server.vllm_client:
         vlm_ready = await server.vllm_client.health_check()
     else:
-        vlm_ready = server.extractor is not None and server.extractor._model is not None
+        vlm_ready = server.extractor is not None and server.extractor.is_loaded
 
     return {
         "status": "ok",
@@ -956,15 +973,6 @@ def main():
     import uvicorn
 
     settings = get_settings()
-
-    # Handle signals
-    def signal_handler(signum, frame):
-        logger.info("signal_received", signal=signum)
-        sys.exit(0)
-
-    signal.signal(signal.SIGTERM, signal_handler)
-    signal.signal(signal.SIGINT, signal_handler)
-
     port = settings.inference_server_health_port
 
     logger.info(

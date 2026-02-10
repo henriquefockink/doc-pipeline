@@ -43,6 +43,11 @@ class QwenVLExtractor(BaseExtractor):
         self._model = None
         self._processor = None
 
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the model is loaded and ready for inference."""
+        return self._model is not None
+
     def _get_model_class(self):
         """Get the appropriate model class based on model name."""
         if "Qwen3-VL" in self.model_name:

@@ -8,22 +8,31 @@ conversion) is delegated to the centralized inference server via Redis.
 
 import asyncio
 import contextlib
-import signal
+import os
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import sentry_sdk
+from fastapi import FastAPI
+from fastapi.responses import JSONResponse, PlainTextResponse
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
 from doc_pipeline.config import get_settings
 from doc_pipeline.observability import get_logger, get_metrics, setup_logging
-from doc_pipeline.shared import DeliveryService, InferenceClient, JobContext, QueueService
+from doc_pipeline.observability.worker_metrics import WorkerMetricsPusher
+from doc_pipeline.shared import (
+    DeliveryService,
+    InferenceClient,
+    JobContext,
+    QueueService,
+)
 from doc_pipeline.shared.constants import QueueName
 
 # Setup
 settings = get_settings()
 setup_logging(json_format=settings.log_json, log_level=settings.log_level)
 logger = get_logger("worker-ocr")
-metrics = get_metrics()
 
 # Sentry / GlitchTip
 if settings.sentry_dsn:
@@ -39,50 +48,78 @@ class OCRWorker:
     """Stateless OCR worker that delegates to inference server."""
 
     def __init__(self):
-        self.settings = get_settings()
         self.queue = QueueService(queue_name=QueueName.OCR)
         self.delivery = DeliveryService(queue_service=self.queue)
+        self.metrics = get_metrics()
         self._inference_client: InferenceClient | None = None
+        self._metrics_pusher: WorkerMetricsPusher | None = None
         self._running = False
+        self._current_job: JobContext | None = None
+        self._worker_id = "ocr-1"
 
-    async def run(self):
-        """Main worker loop."""
-        self._running = True
+    async def start(self):
+        """Initialize and start the worker."""
+        logger.info("worker_ocr_starting", worker_id=self._worker_id)
 
         await self.queue.connect()
 
         # Create inference client (shares queue's Redis connection)
         self._inference_client = InferenceClient(
             queue_service=self.queue,
-            timeout=self.settings.inference_timeout_seconds,
+            timeout=settings.inference_timeout_seconds,
         )
 
-        logger.info("worker_ocr_started")
+        # Start metrics pusher
+        self._metrics_pusher = WorkerMetricsPusher(
+            redis_client=self.queue._redis,
+            worker_id=self._worker_id,
+            interval=10.0,
+        )
+        await self._metrics_pusher.start()
+        logger.info("metrics_pusher_started", worker_id=self._worker_id)
 
+        self._running = True
+        logger.info("worker_ocr_started", worker_id=self._worker_id)
+
+    async def stop(self):
+        """Stop the worker gracefully."""
+        logger.info("worker_ocr_stopping", worker_id=self._worker_id)
+        self._running = False
+
+        if self._current_job:
+            logger.info("waiting_for_current_job", request_id=self._current_job.request_id)
+
+        if self._metrics_pusher:
+            await self._metrics_pusher.stop()
+            logger.info("metrics_pusher_stopped", worker_id=self._worker_id)
+
+        await self.delivery.close()
+        await self.queue.close()
+        logger.info("worker_ocr_stopped", worker_id=self._worker_id)
+
+    async def run(self):
+        """Main worker loop."""
         while self._running:
             try:
                 job = await self.queue.dequeue(timeout=5.0)
                 if job is None:
                     continue
 
+                self._current_job = job
                 await self._process_job(job)
+                self._current_job = None
 
             except asyncio.CancelledError:
                 logger.info("worker_cancelled")
                 break
             except Exception as e:
-                logger.exception("worker_error", error=str(e))
+                logger.error("worker_loop_error", error=str(e), error_type=type(e).__name__)
                 await asyncio.sleep(1)
-
-        # Cleanup
-        await self.queue.close()
-        await self.delivery.close()
-        logger.info("worker_ocr_stopped")
 
     async def _process_job(self, job: JobContext):
         """Process a single OCR job by delegating to inference server."""
+        job.mark_started()
         start_time = time.perf_counter()
-        queue_wait_ms = job.queue_wait_ms
 
         logger.info(
             "job_processing_start",
@@ -91,7 +128,12 @@ class OCRWorker:
             delivery_mode=job.delivery_mode,
         )
 
+        if job.queue_wait_time_seconds is not None:
+            self.metrics.queue_wait_seconds.observe(job.queue_wait_time_seconds)
+
         try:
+            await self.queue.set_progress(job.request_id, "processing")
+
             max_pages = job.extra_params.get("max_pages", 10) if job.extra_params else 10
 
             if not Path(job.image_path).exists():
@@ -109,113 +151,146 @@ class OCRWorker:
             result_dict = reply["result"]
 
             # Add processing time
-            processing_time_ms = (time.perf_counter() - start_time) * 1000
-            result_dict["processing_time_ms"] = processing_time_ms
+            processing_time = time.perf_counter() - start_time
+            result_dict["processing_time_ms"] = round(processing_time * 1000, 2)
 
-            job.result = result_dict
-            job.error = None
+            job.mark_completed(result=result_dict)
 
-            logger.info(
-                "job_processing_complete",
-                request_id=job.request_id,
-                operation=job.operation,
-                processing_time_ms=processing_time_ms,
-                queue_wait_ms=queue_wait_ms,
-                total_pages=result_dict.get("total_pages"),
-            )
-
-            metrics.jobs_processed.labels(
+            # Record success metrics
+            self.metrics.worker_processing_seconds.labels(operation="ocr").observe(processing_time)
+            self.metrics.jobs_processed.labels(
                 operation="ocr",
                 status="success",
                 delivery_mode=job.delivery_mode,
             ).inc()
 
-        except Exception as e:
-            sentry_sdk.capture_exception(e)
-            processing_time_ms = (time.perf_counter() - start_time) * 1000
-
-            logger.exception(
-                "job_processing_error",
+            logger.info(
+                "job_processing_complete",
                 request_id=job.request_id,
-                error=str(e),
+                operation=job.operation,
+                processing_time_ms=round(processing_time * 1000, 2),
+                queue_wait_ms=round((job.queue_wait_time_seconds or 0) * 1000, 2),
+                total_pages=result_dict.get("total_pages"),
             )
 
-            job.result = None
-            job.error = str(e)
+        except Exception as e:
+            sentry_sdk.capture_exception(e)
 
-            metrics.jobs_processed.labels(
+            job.mark_completed(error=str(e) or f"{type(e).__name__}: timeout")
+            self.metrics.jobs_processed.labels(
                 operation="ocr",
                 status="error",
                 delivery_mode=job.delivery_mode,
             ).inc()
 
+            logger.error(
+                "job_processing_error",
+                request_id=job.request_id,
+                operation=job.operation,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
+
+        finally:
+            # Cleanup temp file
+            try:
+                if Path(job.image_path).exists():
+                    os.unlink(job.image_path)
+            except Exception as e:
+                logger.warning("temp_file_cleanup_error", path=job.image_path, error=str(e))
+
         # Deliver result
-        await self.delivery.deliver(job)
+        try:
+            await self.queue.set_progress(job.request_id, "delivering")
+            success = await self.delivery.deliver(job)
 
-        # Cleanup temp file
-        with contextlib.suppress(Exception):
-            Path(job.image_path).unlink(missing_ok=True)
-
-    def stop(self):
-        """Signal worker to stop."""
-        self._running = False
-
-
-# Health check server
-async def health_server(worker: OCRWorker):
-    """Simple HTTP health check server."""
-    from aiohttp import web
-
-    async def health_handler(request):
-        return web.json_response(
-            {
-                "status": "healthy",
-                "worker": "ocr",
-                "running": worker._running,
-            }
-        )
-
-    async def metrics_handler(request):
-        from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
-
-        return web.Response(
-            body=generate_latest(),
-            headers={"Content-Type": CONTENT_TYPE_LATEST},
-        )
-
-    app = web.Application()
-    app.router.add_get("/health", health_handler)
-    app.router.add_get("/metrics", metrics_handler)
-
-    runner = web.AppRunner(app)
-    await runner.setup()
-
-    port = settings.worker_ocr_health_port
-    site = web.TCPSite(runner, "0.0.0.0", port)
-    await site.start()
-    logger.info("health_server_started", port=port)
-
-    return runner
+            if not success and job.delivery_mode == "webhook":
+                await self.queue.move_to_dlq(job, "Webhook delivery failed")
+        except Exception as e:
+            logger.error(
+                "delivery_error",
+                request_id=job.request_id,
+                error=str(e),
+                error_type=type(e).__name__,
+            )
 
 
-async def main():
-    """Main entry point."""
+# Global worker instance
+worker: OCRWorker | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Manage worker lifecycle."""
+    global worker
     worker = OCRWorker()
+    await worker.start()
 
-    def signal_handler(sig, frame):
-        logger.info("shutdown_signal_received", signal=sig)
-        worker.stop()
+    worker_task = asyncio.create_task(worker.run())
 
-    signal.signal(signal.SIGINT, signal_handler)
-    signal.signal(signal.SIGTERM, signal_handler)
+    yield
 
-    health_runner = await health_server(worker)
+    await worker.stop()
+    worker_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await worker_task
 
-    try:
-        await worker.run()
-    finally:
-        await health_runner.cleanup()
+
+# Health check app
+app = FastAPI(
+    title="doc-pipeline OCR Worker",
+    description="OCR Worker health check endpoint",
+    version="0.2.0",
+    lifespan=lifespan,
+)
+
+
+@app.get("/health")
+async def health():
+    """Worker health check."""
+    if worker is None:
+        return JSONResponse(
+            status_code=503,
+            content={"status": "not_ready", "detail": "Worker not initialized"},
+        )
+
+    return {
+        "status": "ok",
+        "worker": "ocr",
+        "worker_running": worker._running,
+        "current_job": worker._current_job.request_id if worker._current_job else None,
+    }
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint."""
+    return PlainTextResponse(
+        content=generate_latest(),
+        media_type=CONTENT_TYPE_LATEST,
+    )
+
+
+def main():
+    """Run the OCR worker."""
+    import uvicorn
+
+    settings = get_settings()
+
+    logger.info(
+        "worker_ocr_server_start",
+        host="0.0.0.0",
+        port=settings.worker_ocr_health_port,
+    )
+
+    uvicorn.run(
+        "worker_ocr:app",
+        host="0.0.0.0",
+        port=settings.worker_ocr_health_port,
+        reload=False,
+        access_log=False,
+    )
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
