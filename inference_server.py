@@ -176,6 +176,16 @@ class InferenceServer:
         await self.queue.connect()
         logger.info("vllm_embedded_loaded")
 
+        # Warmup: run dummy inference through classifier + VLM to compile CUDA graphs
+        # before accepting real requests. EasyOCR already has its own warmup above.
+        logger.info("inference_server_warmup_start")
+        warmup_start = time.perf_counter()
+        dummy_img = Image.new("RGB", (64, 64), color="white")
+        await self._run_sync(self.classifier.classify, dummy_img)
+        await self._run_sync(self.vllm_embedded.generate, dummy_img, "test")
+        warmup_ms = round((time.perf_counter() - warmup_start) * 1000, 2)
+        logger.info("inference_server_warmup_complete", warmup_time_ms=warmup_ms)
+
         self._running = True
         logger.info(
             "inference_server_started",
