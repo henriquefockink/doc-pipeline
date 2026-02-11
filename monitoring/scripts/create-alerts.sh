@@ -387,13 +387,13 @@ echo "============================================"
 echo "Criando alertas de SLO..."
 echo "============================================"
 
-# 25. SLO: Availability Below 99% — fixed formula: when total=0, result=0 (no alarm)
+# 25. SLO: Availability Below 99% — fixed: when total=0, result=1 (no alarm)
 create_alert_math "dp-slo-availability" "SLO: Availability Below 99%" "$FOLDER_UID" '[
     {"refId":"A","relativeTimeRange":{"from":3600,"to":0},"datasourceUid":"'"$DS_UID"'","model":{"expr":"sum(rate(doc_pipeline_requests_total{status=~\"5..\",endpoint=~\"/classify|/extract|/process\"}[1h]))","intervalMs":1000,"maxDataPoints":43200}},
     {"refId":"B","relativeTimeRange":{"from":3600,"to":0},"datasourceUid":"'"$DS_UID"'","model":{"expr":"sum(rate(doc_pipeline_requests_total{endpoint=~\"/classify|/extract|/process\"}[1h]))","intervalMs":1000,"maxDataPoints":43200}},
     {"refId":"C","relativeTimeRange":{"from":0,"to":0},"datasourceUid":"__expr__","model":{"type":"reduce","reducer":"last","expression":"A","settings":{"mode":"dropNN"}}},
     {"refId":"D","relativeTimeRange":{"from":0,"to":0},"datasourceUid":"__expr__","model":{"type":"reduce","reducer":"last","expression":"B","settings":{"mode":"dropNN"}}},
-    {"refId":"E","relativeTimeRange":{"from":0,"to":0},"datasourceUid":"__expr__","model":{"type":"math","expression":"($D > 0) * (1 - ($C / $D))"}},
+    {"refId":"E","relativeTimeRange":{"from":0,"to":0},"datasourceUid":"__expr__","model":{"type":"math","expression":"($D > 0) * (1 - ($C / $D)) + ($D == 0) * 1"}},
     {"refId":"F","relativeTimeRange":{"from":0,"to":0},"datasourceUid":"__expr__","model":{"type":"threshold","expression":"E","conditions":[{"evaluator":{"type":"lt","params":[0.99]}}]}}
 ]' "F" "5m" "critical" "SLO: Availability below 99%" "Service availability is below 99% target" '"slo":"availability"'
 

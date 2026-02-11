@@ -192,6 +192,23 @@ class ErrorResponse(BaseModel):
     detail: str | None = None
 
 
+# Patterns that indicate client-side input errors (should be 400, not 500)
+_CLIENT_ERROR_PATTERNS = (
+    "image file is truncated",
+    "cannot identify image file",
+    "truncated",
+    "not a valid image",
+    "PDF has no pages",
+    "Unsupported image type",
+    "cannot open resource",
+)
+
+
+def _is_client_error(error_msg: str) -> bool:
+    """Check if an inference error was caused by bad client input."""
+    return any(p in error_msg for p in _CLIENT_ERROR_PATTERNS)
+
+
 async def save_temp_image(upload_file: UploadFile) -> str:
     """Save uploaded file to temp location and return path."""
     # Read file content
@@ -440,7 +457,8 @@ async def classify(
             ) from None
 
         if result.get("error"):
-            raise HTTPException(status_code=500, detail=result["error"])
+            status = 400 if _is_client_error(result["error"]) else 500
+            raise HTTPException(status_code=status, detail=result["error"])
 
         metrics.requests_by_client.labels(
             client=client,
@@ -617,7 +635,8 @@ async def extract(
             ) from None
 
         if result.get("error"):
-            raise HTTPException(status_code=500, detail=result["error"])
+            status = 400 if _is_client_error(result["error"]) else 500
+            raise HTTPException(status_code=status, detail=result["error"])
 
         metrics.requests_by_client.labels(
             client=client,
@@ -775,7 +794,8 @@ async def process(
 
         if result.get("error") or result.get("result") is None:
             error_detail = result.get("error") or "Processing failed (no result)"
-            raise HTTPException(status_code=500, detail=error_detail)
+            status = 400 if _is_client_error(error_detail) else 500
+            raise HTTPException(status_code=status, detail=error_detail)
 
         metrics.requests_by_client.labels(
             client=client,
@@ -913,7 +933,8 @@ async def ocr(
             ) from None
 
         if result.get("error"):
-            raise HTTPException(status_code=500, detail=result["error"])
+            status = 400 if _is_client_error(result["error"]) else 500
+            raise HTTPException(status_code=status, detail=result["error"])
 
         metrics.requests_by_client.labels(
             client=client,

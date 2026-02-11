@@ -231,8 +231,8 @@ create_dashboard "Doc Pipeline" "doc-pipeline" "$FOLDER_MAIN" '{
     {"id": 40, "type": "timeseries", "title": "Documentos por Tipo", "gridPos": {"h": 8, "w": 12, "x": 0, "y": 37},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
       "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "unit": "short", "custom": {"drawStyle": "bars", "fillOpacity": 80, "stacking": {"mode": "normal"}}}},
-      "options": {"legend": {"calcs": ["sum"], "displayMode": "table", "placement": "bottom"}},
-      "targets": [{"expr": "increase(doc_pipeline_documents_processed_total[1h])", "legendFormat": "{{document_type}}"}]},
+      "options": {"legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "bottom", "sortBy": "Last *", "sortDesc": true}},
+      "targets": [{"expr": "sum by (document_type) (increase(doc_pipeline_documents_processed_total[$__range])) > 0", "legendFormat": "{{document_type}}"}]},
 
     {"id": 41, "type": "timeseries", "title": "Classification Confidence", "gridPos": {"h": 8, "w": 12, "x": 12, "y": 37},
       "datasource": {"type": "prometheus", "uid": "${datasource}"},
